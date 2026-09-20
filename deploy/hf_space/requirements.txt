@@ -1,0 +1,5 @@
+# Local development: install the project with its serving extra first.
+# scripts/publish_hf.py replaces this with exact dependency versions and the
+# wheel built from the same source snapshot recorded by training.
+gradio>=6,<7
+huggingface-hub>=0.27,<2

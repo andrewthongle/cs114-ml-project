@@ -1,0 +1,14 @@
+{
+  "status": "awaiting_complete_authorized_dataset",
+  "dataset": "ViHSD",
+  "source": "https://huggingface.co/datasets/uitnlp/vihsd",
+  "revision": null,
+  "fingerprint": null,
+  "split_counts": null,
+  "label_mapping": {
+    "0": "CLEAN",
+    "1": "OFFENSIVE",
+    "2": "HATE"
+  },
+  "note": "Sibling SafeView contains dev/test only; missing train and source revision. See local_inventory.json. No complete dataset has been imported or used for training."
+}

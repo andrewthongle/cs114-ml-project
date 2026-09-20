@@ -1,0 +1,364 @@
+diff --git a/src/content/concealment.ts b/src/content/concealment.ts
+--- a/src/content/concealment.ts
++++ b/src/content/concealment.ts
+@@ -1,3 +1,4 @@
++import { CS114_DEMO } from '../settings/cs114-demo';
+ import type { ModerationResult } from '../provider/types';
+ import type { SiteAdapter } from './adapters/types';
+ import { CACHE_TTL_MS, DEBOUNCE_MS } from '../settings/config';
+@@ -98,10 +99,15 @@
+   // Zero-width characters and Cyrillic homoglyphs would otherwise trivially
+   // evade classification and pollute the hash cache. The original DOM text
+   // is untouched — reveal restores exactly what the page rendered.
+-  const text = normalizeForModeration(rawText);
++  // The evaluated Python pipeline owns preprocessing for the demo.
++  const text = CS114_DEMO ? rawText : normalizeForModeration(rawText);
+   if (!text) return;
+ 
+-  const hash = await hashText(text);
++  const cacheNamespace = CS114_DEMO
++    ? JSON.stringify([CS114_DEMO.modelRevision, CS114_DEMO.policyVersion,
++        CS114_DEMO.threshold, CS114_DEMO.forceVietnamese, 'model-only'])
++    : '';
++  const hash = await hashText(cacheNamespace ? `${cacheNamespace}\n${text}` : text);
+ 
+   // Apply concealment immediately
+   setState(node, 'concealed');
+diff --git a/src/content/overlay.ts b/src/content/overlay.ts
+--- a/src/content/overlay.ts
++++ b/src/content/overlay.ts
+@@ -1,3 +1,4 @@
++import { CS114_DEMO } from '../settings/cs114-demo';
+ import type { ModerationResult, ModerationSeverity, ProviderName } from '../provider/types';
+ import { DEFAULT_PREFS, type UserPrefs } from '../settings/user-prefs';
+ // Compiled overlay CSS injected into Shadow DOM — isolated from host-page styles
+@@ -170,6 +171,9 @@
+   severityBadge.textContent = severityLabel(result.severity);
+   severityRow.appendChild(severityText);
+   severityRow.appendChild(severityBadge);
++  if (result.modelRevision) {
++    severityRow.textContent = `P(OFFENSIVE) + P(HATE): ${Math.round((result.pHarm ?? 0) * 100)}%`;
++  }
+   panel.appendChild(severityRow);
+ 
+   const languageRow = document.createElement('span');
+@@ -202,9 +206,11 @@
+   explainer.className = 'sv-why-explainer';
+   const confidencePct = Math.round(result.confidence * 100);
+   const categoryName = formatCategory(result.category);
+-  explainer.textContent =
+-    `Mô hình phát hiện đây là nội dung ${categoryName} với độ tin cậy ${confidencePct}%. ` +
+-    `Bạn có thể xem nội dung gốc bằng nút bên dưới.`;
++  explainer.textContent = result.modelRevision
++    ? `Nhãn ba lớp: ${result.rawLabel}. Chính sách ẩn dùng tổng P(OFFENSIVE) + P(HATE), ` +
++      `không dùng độ tin cậy như mức độ độc hại. Bạn có thể xem nội dung gốc bên dưới.`
++    : `Mô hình phát hiện đây là nội dung ${categoryName} với độ tin cậy ${confidencePct}%. ` +
++      `Bạn có thể xem nội dung gốc bằng nút bên dưới.`;
+   body.appendChild(explainer);
+ 
+   if (result.reason) {
+@@ -214,7 +220,9 @@
+     body.appendChild(rawLabel);
+   }
+ 
+-  const model = modelCardFor(result.provider);
++  const model = result.modelRevision && CS114_DEMO
++    ? { name: CS114_DEMO.modelName, url: CS114_DEMO.modelUrl }
++    : modelCardFor(result.provider);
+   const modelLine = document.createElement('p');
+   modelLine.className = 'sv-why-model';
+   modelLine.textContent = `${LABELS.modelLabel}: ${model.name} — `;
+diff --git a/src/provider/__tests__/cs114-routing.test.ts b/src/provider/__tests__/cs114-routing.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/provider/__tests__/cs114-routing.test.ts
+@@ -0,0 +1,25 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest';
++const mock = vi.hoisted(() => ({ moderate: vi.fn(), english: vi.fn() }));
++vi.mock('../../settings/cs114-demo', () => ({ CS114_DEMO: { forceVietnamese: true } }));
++vi.mock('../cs114-space', () => ({ moderateCs114: mock.moderate }));
++vi.mock('../en-space', () => ({ moderateEnglish: mock.english }));
++import { moderateText } from '../index';
++
++describe('CS114 demo routing', () => {
++  beforeEach(() => { mock.moderate.mockReset(); mock.english.mockReset(); });
++  it('routes Vietnamese without diacritics to the configured demo', async () => {
++    mock.moderate.mockResolvedValue({ flagged: false, isHarmful: false });
++    await moderateText('hom nay troi dep qua');
++    expect(mock.moderate).toHaveBeenCalledWith('hom nay troi dep qua');
++    expect(mock.english).not.toHaveBeenCalled();
++  });
++  it('keeps the pure-model result even when a legacy lexicon term is present', async () => {
++    const result = { flagged: false, isHarmful: false };
++    mock.moderate.mockResolvedValue(result);
++    expect(await moderateText('vl')).toBe(result);
++  });
++  it('propagates API failure without a CLEAN result', async () => {
++    mock.moderate.mockRejectedValue(new Error('Space unavailable'));
++    await expect(moderateText('kiem thu')).rejects.toThrow('Space unavailable');
++  });
++});
+diff --git a/src/provider/__tests__/cs114-space.test.ts b/src/provider/__tests__/cs114-space.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/provider/__tests__/cs114-space.test.ts
+@@ -0,0 +1,45 @@
++import { describe, it, expect } from 'vitest';
++import { normaliseCs114Response } from '../cs114-space';
++import type { Cs114DemoConfig } from '../../settings/cs114-demo';
++
++const config: Cs114DemoConfig = {
++  spaceUrl: 'https://fixture.hf.space', modelUrl: 'https://huggingface.co/fixture/model',
++  modelName: 'Synthetic contract fixture', modelRevision: 'fixture-v1', policyVersion: '1',
++  threshold: 0.6, forceVietnamese: true,
++};
++const response = {
++  scores: { CLEAN: 0.4, OFFENSIVE: 0.35, HATE: 0.25 },
++  label: 'CLEAN', confidence: 0.4, p_harm: 0.6, should_hide: true,
++  model_revision: 'fixture-v1', policy_version: '1',
++};
++
++describe('CS114 frozen policy contract', () => {
++  it('hides when combined harmful probability crosses threshold even with CLEAN argmax', () => {
++    const result = normaliseCs114Response(response, config);
++    expect(result.flagged).toBe(true);
++    expect(result.rawLabel).toBe('CLEAN');
++    expect(result.confidence).toBe(0.4);
++    expect(result.pHarm).toBe(0.6);
++    expect(result.categories.CLEAN).toBe(true);
++  });
++  it('preserves a harmful label when the hiding threshold is not met', () => {
++    const result = normaliseCs114Response({ ...response,
++      scores: { CLEAN: 0.3, OFFENSIVE: 0.1, HATE: 0.6 }, label: 'HATE', confidence: 0.6,
++      p_harm: 0.7, should_hide: false,
++    }, { ...config, threshold: 0.8 });
++    expect(result.flagged).toBe(false);
++    expect(result.rawLabel).toBe('HATE');
++  });
++  it('rejects a deployment update rather than assigning the old threshold silently', () => {
++    expect(() => normaliseCs114Response({ ...response, model_revision: 'unexpected' }, config)).toThrow();
++  });
++  it('rejects missing classes and malformed probabilities', () => {
++    for (const scores of [{ CLEAN: 1 }, { CLEAN: NaN, OFFENSIVE: 0.5, HATE: 0.5 },
++      { CLEAN: 0.4, OFFENSIVE: 0.4, HATE: 0.4 }, { CLEAN: 0.4, OFFENSIVE: 0.35, HATE: 0.25, extra: 0 }]) {
++      expect(() => normaliseCs114Response({ ...response, scores }, config)).toThrow();
++    }
++  });
++  it('rejects server/client policy disagreement', () => {
++    expect(() => normaliseCs114Response({ ...response, should_hide: false }, config)).toThrow();
++  });
++});
+diff --git a/src/provider/cs114-space.ts b/src/provider/cs114-space.ts
+new file mode 100644
+--- /dev/null
++++ b/src/provider/cs114-space.ts
+@@ -0,0 +1,55 @@
++import { CS114_DEMO, type Cs114DemoConfig } from '../settings/cs114-demo';
++import { HF_TIMEOUT_MS, HF_MAX_RETRIES, HF_RETRY_DELAY_MS } from '../settings/config';
++import { fetchWithRetry } from './fetch-util';
++import type { ModerationResult } from './types';
++
++const LABELS = ['CLEAN', 'OFFENSIVE', 'HATE'] as const;
++type Label = (typeof LABELS)[number];
++
++/** Validate the identity-bearing endpoint while retaining /classify compatibility. */
++export function normaliseCs114Response(raw: unknown, config: Cs114DemoConfig): ModerationResult {
++  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid CS114 response');
++  const response = raw as Record<string, unknown>;
++  if (response.model_revision !== config.modelRevision || response.policy_version !== config.policyVersion) {
++    throw new Error('CS114 release identity changed; reload the pinned demo build');
++  }
++  if (!Number.isFinite(config.threshold) || config.threshold < 0 || config.threshold > 1 + Number.EPSILON) {
++    throw new Error('Invalid locked CS114 threshold');
++  }
++  const rawScores = response.scores;
++  if (!rawScores || typeof rawScores !== 'object' || Array.isArray(rawScores)) throw new Error('Invalid CS114 scores');
++  const record = rawScores as Record<string, unknown>;
++  if (Object.keys(record).length !== 3 || !LABELS.every((label) => {
++    const p = record[label];
++    return typeof p === 'number' && Number.isFinite(p) && p >= 0 && p <= 1;
++  })) throw new Error('CS114 requires exactly three normalized probabilities');
++  const scores = record as Record<Label, number>;
++  if (Math.abs(LABELS.reduce((total, name) => total + scores[name], 0) - 1) > 1.01e-6) {
++    throw new Error('CS114 probabilities do not sum to one');
++  }
++  const label = LABELS.reduce<Label>((best, name) => scores[name] > scores[best] ? name : best, 'CLEAN');
++  const pHarm = Math.min(1, scores.OFFENSIVE + scores.HATE);
++  const flagged = pHarm >= config.threshold;
++  if (response.label !== label || response.confidence !== scores[label] ||
++      typeof response.p_harm !== 'number' || Math.abs(response.p_harm - pHarm) > 1e-12 ||
++      response.should_hide !== flagged) throw new Error('CS114 decision does not match the locked policy');
++  return {
++    flagged, isHarmful: flagged,
++    category: label === 'HATE' ? 'hate' : label === 'OFFENSIVE' ? 'offensive' : 'other',
++    // Legacy field only. CS114 UI does not present confidence as severity.
++    severity: 'low', confidence: scores[label],
++    categories: { CLEAN: label === 'CLEAN', OFFENSIVE: label === 'OFFENSIVE', HATE: label === 'HATE' },
++    reason: label, language: 'vi', provider: 'huggingface-vi',
++    rawScores: scores, rawLabel: label, pHarm,
++    modelRevision: config.modelRevision, policyVersion: config.policyVersion,
++  };
++}
++
++export async function moderateCs114(text: string): Promise<ModerationResult> {
++  if (!CS114_DEMO) throw new Error('CS114 demo has no configured release');
++  const raw = await fetchWithRetry(CS114_DEMO.spaceUrl, text, {
++    timeoutMs: HF_TIMEOUT_MS, maxRetries: HF_MAX_RETRIES, retryDelayMs: HF_RETRY_DELAY_MS,
++    apiName: 'decision',
++  });
++  return normaliseCs114Response(raw, CS114_DEMO);
++}
+diff --git a/src/provider/fetch-util.ts b/src/provider/fetch-util.ts
+--- a/src/provider/fetch-util.ts
++++ b/src/provider/fetch-util.ts
+@@ -22,6 +22,7 @@
+   timeoutMs: number;
+   maxRetries: number;
+   retryDelayMs: number;
++  apiName?: 'classify' | 'decision';
+ }
+ 
+ /** Consecutive failure count that trips the breaker. */
+@@ -98,7 +99,7 @@
+     }
+ 
+     try {
+-      const result = await fetchOnce(baseUrl, text, opts.timeoutMs);
++      const result = await fetchOnce(baseUrl, text, opts.timeoutMs, opts.apiName ?? 'classify');
+       recordSuccess(baseUrl);
+       return result;
+     } catch (err) {
+@@ -115,13 +116,13 @@
+   throw lastError;
+ }
+ 
+-async function fetchOnce(baseUrl: string, text: string, timeoutMs: number): Promise<unknown> {
++async function fetchOnce(baseUrl: string, text: string, timeoutMs: number, apiName: 'classify' | 'decision'): Promise<unknown> {
+   const controller = new AbortController();
+   const timerId = setTimeout(() => controller.abort(), timeoutMs);
+ 
+   try {
+-    const eventId = await submitClassify(baseUrl, text, controller.signal);
+-    return await pollResult(baseUrl, eventId, text, controller.signal);
++    const eventId = await submitClassify(baseUrl, text, controller.signal, apiName);
++    return await pollResult(baseUrl, eventId, text, controller.signal, apiName);
+   } finally {
+     clearTimeout(timerId);
+   }
+@@ -135,8 +136,9 @@
+   baseUrl: string,
+   text: string,
+   signal: AbortSignal,
++  apiName: 'classify' | 'decision',
+ ): Promise<string> {
+-  const url = `${baseUrl}${HF_API_CLASSIFY_PATH}`;
++  const url = `${baseUrl}${HF_API_CLASSIFY_PATH.replace(/classify$/, apiName)}`;
+   const response = await fetch(url, {
+     method: 'POST',
+     headers: { 'Content-Type': 'application/json' },
+@@ -169,8 +171,9 @@
+   eventId: string,
+   text: string,
+   signal: AbortSignal,
++  apiName: 'classify' | 'decision',
+ ): Promise<unknown> {
+-  const url = `${baseUrl}${HF_API_CLASSIFY_PATH}/${eventId}`;
++  const url = `${baseUrl}${HF_API_CLASSIFY_PATH.replace(/classify$/, apiName)}/${eventId}`;
+   const response = await fetch(url, { signal });
+ 
+   if (response.status >= 400 && response.status < 500) {
+@@ -248,7 +251,6 @@
+           if (!Array.isArray(parsed) || parsed.length === 0) {
+             throw new Error('SSE complete event data is not a non-empty array');
+           }
+-          console.debug('Received SSE complete event:', parsed[0], '| text:', text);
+           return parsed[0];
+         }
+ 
+@@ -263,7 +265,6 @@
+         let event: LegacySseEvent;
+         try {
+           event = JSON.parse(jsonStr) as LegacySseEvent;
+-          console.debug('Received SSE event:', event);
+         } catch {
+           // Malformed SSE payload — skip
+           continue;
+diff --git a/src/provider/index.ts b/src/provider/index.ts
+--- a/src/provider/index.ts
++++ b/src/provider/index.ts
+@@ -14,6 +14,8 @@
+  * keep content concealed, retry, or mark as error state.
+  */
+ 
++import { CS114_DEMO } from '../settings/cs114-demo';
++import { moderateCs114 } from './cs114-space';
+ import { detectLanguage } from '../language/detect';
+ import { moderateVietnamese } from './vi-space';
+ import { moderateEnglish } from './en-space';
+@@ -40,7 +42,12 @@
+   text: string,
+   options: ModerateTextOptions = {},
+ ): Promise<ModerationResult> {
+-  const lang = detectLanguage(text);
++  const lang = CS114_DEMO?.forceVietnamese ? 'vi' : detectLanguage(text);
++  if (CS114_DEMO && lang === 'vi') {
++    // Evaluated model-only demo: use its frozen threshold, bypass legacy presets
++    // and lexicon override. No-diacritic Vietnamese can be forced to this route.
++    return moderateCs114(text);
++  }
+   const result =
+     lang === 'vi'
+       ? await moderateVietnamese(text, { threshold: options.thresholds?.vi ?? 0 })
+diff --git a/src/provider/types.ts b/src/provider/types.ts
+--- a/src/provider/types.ts
++++ b/src/provider/types.ts
+@@ -29,6 +29,12 @@
+ export type ModerationResult = {
+   /** True when the text was flagged as harmful. */
+   flagged: boolean;
++  /** CS114 keeps raw classification and hiding policy separate. */
++  rawScores?: Record<string, number>;
++  rawLabel?: 'CLEAN' | 'OFFENSIVE' | 'HATE';
++  pHarm?: number;
++  modelRevision?: string;
++  policyVersion?: string;
+   /** Alias of `flagged` for semantic clarity at call sites. */
+   isHarmful: boolean;
+   /** Best-fit category from the normalised set. */
+diff --git a/src/settings/cs114-demo.ts b/src/settings/cs114-demo.ts
+new file mode 100644
+--- /dev/null
++++ b/src/settings/cs114-demo.ts
+@@ -0,0 +1,13 @@
++/** Separate research build. Generated from the evaluated release before use. */
++export interface Cs114DemoConfig {
++  spaceUrl: string;
++  modelUrl: string;
++  modelName: string;
++  modelRevision: string;
++  policyVersion: string;
++  threshold: number;
++  forceVietnamese: boolean;
++}
++
++// Null deliberately preserves the existing extension until a real release exists.
++export const CS114_DEMO: Cs114DemoConfig | null = null;
+diff --git a/vite.config.ts b/vite.config.ts
+--- a/vite.config.ts
++++ b/vite.config.ts
+@@ -1,9 +1,14 @@
+ import { defineConfig } from 'vite';
+ import { crx } from '@crxjs/vite-plugin';
+ import manifest from './manifest.json';
++import { CS114_DEMO } from './src/settings/cs114-demo';
+ 
+ export default defineConfig({
+-  plugins: [crx({ manifest })],
++  plugins: [crx({ manifest: CS114_DEMO ? {
++    ...manifest,
++    name: 'Safe View — CS114 research demo',
++    host_permissions: [...manifest.host_permissions, `${new URL(CS114_DEMO.spaceUrl).origin}/*`],
++  } : manifest })],
+   build: {
+     // Target Chrome 111+ (full MV3 service worker module support)
+     target: 'chrome111',

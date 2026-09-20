@@ -1,0 +1,27 @@
+# Staged search: identical feature grid for each classifier, then tune the
+# best representation per classifier. All selection uses validation only.
+seed: 42
+calibration_folds: 3
+calibration_ensemble: false
+feature_kinds: [word, char, combined]
+min_df: [2, 3]
+max_features: 50000  # per branch; combined can use up to 100000
+preprocessing:
+  lowercase: false
+  normalize_urls: false
+  normalize_mentions: false
+models:
+  svm:
+    defaults: {C: 1.0, class_weight: null, max_iter: 5000}
+    grid: {C: [0.1, 1.0, 5.0], class_weight: [null, balanced]}
+  logistic_regression:
+    defaults: {C: 1.0, class_weight: null, max_iter: 1000}
+    grid: {C: [0.1, 1.0, 5.0], class_weight: [null, balanced]}
+  complement_nb:
+    defaults: {alpha: 1.0, norm: false}
+    grid: {alpha: [0.1, 0.5, 1.0], norm: [false, true]}
+policy:
+  criterion: max_f1
+  max_clean_fpr: null
+learning_curve_fractions: [0.25, 0.5, 0.75, 1.0]
+bootstrap_repeats: 1000

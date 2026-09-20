@@ -1,0 +1,77 @@
+{
+  "updated_at": "2026-09-20T16:53:08.036386+00:00",
+  "status": "software_verified_real_experiment_pending",
+  "python": "3.13.3",
+  "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "python_tests": {
+    "passed": 99,
+    "failed": 0,
+    "warnings": 2,
+    "command": "python -m pytest -q",
+    "note": "Final complete suite; two upstream deprecation warnings."
+  },
+  "three_model_smoke": {
+    "status": "passed",
+    "synthetic": true,
+    "splits": {
+      "train": 72,
+      "validation": 36,
+      "test": 36
+    },
+    "models": [
+      "svm",
+      "logistic_regression",
+      "complement_nb"
+    ],
+    "verified": [
+      "aggregate EDA",
+      "staged search",
+      "training-only SVM calibration",
+      "validation threshold",
+      "artifact serialization",
+      "frozen final test",
+      "prediction API"
+    ],
+    "quality_claim": null
+  },
+  "notebook": {
+    "file": "notebooks/cs114_safeview.ipynb",
+    "executed_code_cells": 9,
+    "error_outputs": 0,
+    "mode": "saved-results / incomplete ViHSD"
+  },
+  "local_http_api": {
+    "status": "passed",
+    "first_and_warm_calls": 6,
+    "failed_calls": 0,
+    "protocol": "POST event submission + GET named SSE",
+    "synthetic_model": true,
+    "server_closed_after_check": true,
+    "not_a_hugging_face_latency_measurement": true
+  },
+  "wheel": {
+    "status": "built",
+    "command": "python -m build --wheel --no-isolation",
+    "serving_linux_pinned_dependency_count": 63
+  },
+  "safeview_patch": {
+    "base_commit": "7e09b01569365c6d173616fb22cc5612b269f441",
+    "type_check": "passed",
+    "selected_tests_passed": 63,
+    "new_tests": 8,
+    "executed_in": "isolated temporary copy of tracked files",
+    "sibling_repository_modified": false
+  },
+  "real_vihsd_download": {
+    "status": "blocked_missing_train_split_and_hf_authentication",
+    "substitute_dataset_used": false
+  },
+  "real_vihsd_metrics_available": false,
+  "published_hugging_face_model": false,
+  "published_hugging_face_space": false,
+  "limitations": [
+    "Synthetic class markers only verify software and do not measure Vietnamese classification quality.",
+    "Real EDA, training, test, manual error analysis, publication and extension E2E are pending authorized data and deployment targets."
+  ],
+  "local_vihsd_inventory": "data/local_inventory.json"
+}

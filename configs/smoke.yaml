@@ -1,0 +1,21 @@
+# SOFTWARE VERIFICATION ONLY. Never interpret this run as ViHSD evidence.
+seed: 42
+calibration_folds: 3
+calibration_ensemble: false
+feature_kinds: [word, char, combined]
+min_df: [1]
+max_features: 1500
+preprocessing: {lowercase: false, normalize_urls: false, normalize_mentions: false}
+models:
+  svm:
+    defaults: {C: 1.0, class_weight: null, max_iter: 5000}
+    grid: {C: [0.1, 1.0], class_weight: [null, balanced]}
+  logistic_regression:
+    defaults: {C: 1.0, class_weight: null, max_iter: 1000}
+    grid: {C: [0.1, 1.0], class_weight: [null, balanced]}
+  complement_nb:
+    defaults: {alpha: 1.0, norm: false}
+    grid: {alpha: [0.1, 1.0], norm: [false, true]}
+policy: {criterion: max_f1, max_clean_fpr: null}
+learning_curve_fractions: [0.5, 1.0]
+bootstrap_repeats: 100
