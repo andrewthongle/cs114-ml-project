@@ -88,6 +88,34 @@ def dataset_fingerprint(splits: dict[str, pd.DataFrame]) -> str:
     return digest.hexdigest()
 
 
+def bundle_from_frames(
+    frames: dict[str, pd.DataFrame], *, source: str | None = None,
+    revision: str | None = None, files: list[dict] | None = None,
+    source_metadata: dict | None = None,
+) -> DatasetBundle:
+    """Apply the same schema and identity rules to local and remote data."""
+    metadata = source_metadata or {}
+    if set(frames) != set(SPLIT_NAMES):
+        raise ValueError("Expected exactly the original train, validation and test splits.")
+    splits = {split: _canonical_frame(frames[split], split) for split in SPLIT_NAMES}
+    manifest = {
+        "schema_version": 1,
+        "dataset": metadata.get("dataset", "synthetic fixture" if metadata.get("synthetic") else "ViHSD"),
+        "synthetic": bool(metadata.get("synthetic", False)),
+        "source": source or "local files; provenance must be supplied by the researcher",
+        "revision": revision,
+        "fingerprint": dataset_fingerprint(splits),
+        "label_mapping": {str(key): value for key, value in LABEL_NAMES.items()},
+        "split_counts": {split: len(frame) for split, frame in splits.items()},
+        "label_counts": {split: {name: int((frame.label == label).sum()) for label, name in LABEL_NAMES.items()} for split, frame in splits.items()},
+        "files": files or [],
+        "official_splits_preserved": True,
+        "preprocessing_version": PREPROCESSING_VERSION,
+        "provenance_note": "Original split assignment retained; dataset identity and license require verification against the supplied source.",
+    }
+    return DatasetBundle(splits=splits, manifest=manifest)
+
+
 def _read_table(path: Path) -> pd.DataFrame:
     if path.suffix == ".csv":
         # Literal strings such as "NA" must remain text, not be turned into NaN.
@@ -152,27 +180,15 @@ def load_local_dataset(data_dir: str | Path, source: str | None = None, revision
             raise ValueError("source.json must be a JSON object with source/revision metadata.")
     source = source if source is not None else source_metadata.get("source")
     revision = revision if revision is not None else source_metadata.get("revision")
-    splits, files = {}, []
+    frames, files = {}, []
     for split in SPLIT_NAMES:
         frame, paths = _find_split(root, split)
-        splits[split] = _canonical_frame(frame, split)
+        frames[split] = frame
         files.extend(paths)
-    manifest = {
-        "schema_version": 1,
-        "dataset": source_metadata.get("dataset", "synthetic fixture" if source_metadata.get("synthetic") else "ViHSD"),
-        "synthetic": bool(source_metadata.get("synthetic", False)),
-        "source": source or "local files; provenance must be supplied by the researcher",
-        "revision": revision,
-        "fingerprint": dataset_fingerprint(splits),
-        "label_mapping": {str(key): value for key, value in LABEL_NAMES.items()},
-        "split_counts": {split: len(frame) for split, frame in splits.items()},
-        "label_counts": {split: {name: int((frame.label == label).sum()) for label, name in LABEL_NAMES.items()} for split, frame in splits.items()},
-        "files": [{"path": str(path.relative_to(root)), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in files],
-        "official_splits_preserved": True,
-        "preprocessing_version": PREPROCESSING_VERSION,
-        "provenance_note": "Original split assignment retained; dataset identity and license require verification against the supplied source.",
-    }
-    return DatasetBundle(splits=splits, manifest=manifest)
+    return bundle_from_frames(
+        frames, source=source, revision=revision, source_metadata=source_metadata,
+        files=[{"path": str(path.relative_to(root)), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in files],
+    )
 
 
 def validate_training_data(bundle: DatasetBundle) -> None:

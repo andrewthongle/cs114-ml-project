@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from safeview_ml.inference import RELEASE_FILES, ReleasePredictor
+from safeview_ml.inference import ReleasePredictor, release_file_names
 
 
 def resolve_release_dir() -> Path:
@@ -25,15 +25,21 @@ def resolve_release_dir() -> Path:
             "Set SAFEVIEW_RELEASE_DIR, or SAFEVIEW_MODEL_REPO and "
             "SAFEVIEW_MODEL_REVISION to a full 40-character Hub commit SHA."
         )
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import hf_hub_download, snapshot_download
 
-    return Path(snapshot_download(repo_id=repo_id, revision=revision, allow_patterns=list(RELEASE_FILES)))
+    metadata_path = hf_hub_download(repo_id=repo_id, revision=revision, filename="metadata.json")
+    metadata = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
+    return Path(snapshot_download(repo_id=repo_id, revision=revision,
+                                  allow_patterns=list(release_file_names(metadata))))
 
 
 def create_app(predictor: ReleasePredictor | None = None) -> Any:
     import gradio as gr
 
-    predictor = predictor or ReleasePredictor(resolve_release_dir())
+    predictor = predictor or ReleasePredictor(resolve_release_dir(), device=os.environ.get("SAFEVIEW_DEVICE", "cpu"))
+    concurrency = int(os.environ.get("SAFEVIEW_CONCURRENCY", "1"))
+    if concurrency < 1:
+        raise ValueError("SAFEVIEW_CONCURRENCY must be positive")
 
     def classify(text: str) -> dict[str, float]:
         # Deliberately let validation/inference errors become SSE error events.
@@ -66,14 +72,14 @@ def create_app(predictor: ReleasePredictor | None = None) -> Any:
         # rejected instead of Textbox coercing a number/object into a string.
         gr.Button("Phân loại").click(
             classify, inputs=text, outputs=scores, api_name="classify",
-            preprocess=False, concurrency_limit=2, concurrency_id="inference",
+            preprocess=False, concurrency_limit=concurrency, concurrency_id="inference",
         )
         gr.Button("Xem quyết định ẩn").click(
             decision, inputs=text, outputs=details, api_name="decision",
-            preprocess=False, concurrency_limit=2, concurrency_id="inference",
+            preprocess=False, concurrency_limit=concurrency, concurrency_id="inference",
         )
         gr.Button("Thông tin policy").click(policy, inputs=None, outputs=details, api_name="policy")
-    return demo.queue(max_size=64, default_concurrency_limit=2)
+    return demo.queue(max_size=64, default_concurrency_limit=concurrency)
 
 
 if __name__ == "__main__":

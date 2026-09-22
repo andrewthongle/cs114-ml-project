@@ -1,6 +1,7 @@
-# Staged search: identical feature grid for each classifier, then tune the
-# best representation per classifier. All selection uses validation only.
+# Four primary families. Validation ranks all four; BamiBERT is the declared
+# deployment target even if another family wins. Test never changes selection.
 seed: 42
+deployment_family: bamibert
 calibration_folds: 3
 calibration_ensemble: false
 feature_kinds: [word, char, combined]
@@ -17,9 +18,34 @@ models:
   logistic_regression:
     defaults: {C: 1.0, class_weight: null, max_iter: 1000}
     grid: {C: [0.1, 1.0, 5.0], class_weight: [null, balanced]}
-  complement_nb:
-    defaults: {alpha: 1.0, norm: false}
-    grid: {alpha: [0.1, 0.5, 1.0], norm: [false, true]}
+  phobert:
+    backend: transformers
+    model_id: vinai/phobert-base
+    revision: main  # resolved once to a commit SHA and saved before training
+    preprocessing: pyvi  # pragmatic segmenter; differs from pretraining VnCoreNLP
+    defaults: {learning_rate: 0.00002}
+    grid: {learning_rate: [0.00002]}
+  bamibert:
+    backend: transformers
+    model_id: Qualcomm-AI-Research/BamiBERT
+    revision: main
+    preprocessing: raw
+    defaults: {learning_rate: 0.00002}
+    grid: {learning_rate: [0.00002]}
+transformer_defaults:
+  epochs: 3
+  max_length: 128
+  batch_size: 8
+  eval_batch_size: 16
+  gradient_accumulation_steps: 2
+  fp16: true  # enabled only on CUDA, automatically disabled on CPU
+  device: auto  # CUDA when available; CPU otherwise
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  logging_steps: 50
+  gradient_checkpointing: false
+# CPU timing includes preprocessing and tokenization, for Space comparison.
+transformer_benchmark_repeats: 5
 policy:
   criterion: max_f1
   max_clean_fpr: null

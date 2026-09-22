@@ -1,6 +1,6 @@
 # Bản nháp phương pháp
 
-`bao-cao-phuong-phap.docx` và `trinh-bay-phuong-phap.pptx` là tài liệu phương pháp bằng tiếng Việt. Đã tìm thấy dev/test ViHSD cục bộ trong repository SafeView, nhưng còn thiếu train và chưa xác minh revision nguồn. Các file không có điểm số ViHSD hoặc tuyên bố mô hình thắng. Chúng chưa thay thế bộ bài nộp đã hoàn thành thực nghiệm.
+`bao-cao-phuong-phap.docx` và `trinh-bay-phuong-phap.pptx` hiện là bản nháp phương pháp bằng tiếng Việt thuộc phạm vi ba baseline cũ. Script tạo báo cáo đã được cập nhật cho SVM, Logistic Regression, PhoBERT và BamiBERT, cùng nguồn ViHSD trực tiếp từ GitHub; hai tài liệu chưa được dựng lại. Chúng không có điểm số ViHSD hoặc tuyên bố mô hình thắng. Cần tạo và rà soát bản mới sau khi người dùng chạy thực nghiệm.
 
 Script `scripts/build_reports.py` tạo Word bằng python-docx và PowerPoint bằng `@oai/artifact-tool`, dùng runtime có sẵn của Codex. Deck chứa text và bảng PowerPoint chỉnh sửa được. Script cũng render từng trang/slide vào thư mục QA riêng, cần xem ảnh trước khi phân phối bản dựng mới.
 

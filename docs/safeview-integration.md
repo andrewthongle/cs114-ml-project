@@ -1,28 +1,35 @@
 # Tích hợp bản demo CS114 với SafeView
 
+Nếu bắt đầu từ training, thực hiện theo [hướng dẫn Colab → Hugging Face → SafeView](train-deploy-guide.md). Tài liệu dưới đây mô tả chi tiết artifact, hợp đồng API và patch tích hợp.
+
 ## Trạng thái thực tế
 
-Mã inference, Space template và patch tích hợp đã được viết. Chưa có model ViHSD
-đã đánh giá hoặc URL Space mới, nên chưa publish, chưa đổi repo SafeView và chưa
-đo độ trễ mạng thực tế. Smoke test bằng dữ liệu tổng hợp chỉ kiểm tra phần mềm,
-không phải bằng chứng chất lượng phân loại.
+Mục tiêu triển khai là **BamiBERT fine-tune trên ViHSD**, được chốt trước test theo
+yêu cầu người dùng. `validation_best_family` báo model đứng đầu dev riêng; BamiBERT
+không bắt buộc phải thắng PhoBERT. Mã inference, Space template và patch đã chuẩn bị,
+nhưng chưa có model ViHSD đã đánh giá hoặc URL Space mới. Người dùng tự chạy train,
+test và publish; chưa đổi repo SafeView hoặc đo độ trễ mạng thực tế. Smoke test tổng
+hợp và Transformer nhỏ/offline chỉ kiểm tra phần mềm, không đo chất lượng tiếng Việt.
 
 Đã kiểm tra repo cùng cấp `/Users/thong/Data/Projects/safe-view` tại commit
 `7e09b01569365c6d173616fb22cc5612b269f441`. Các tài liệu/script untracked của người
 dùng vẫn nguyên trạng. [Patch review](safeview-cs114-demo.patch) áp dụng lên commit
 này; mặc định `CS114_DEMO = null`, nên chưa kích hoạt mô hình chưa được đánh giá.
-Patch đã được áp dụng vào bản sao tracked riêng trong thư mục tạm, vượt qua
-TypeScript type-check và 63 test provider/routing/fetch/overlay/concealment,
-trong đó 8 test mới kiểm tra policy, đổi revision, routing và lỗi API.
+Kiểm chứng patch được thực hiện trên bản sao tracked riêng, không phải bản đang
+chạy của người dùng; xem ngày và phạm vi trong `docs/verification.json`. Khi áp dụng
+lên revision SafeView khác, cần kiểm tra lại TypeScript, provider, routing và UI.
 
 ## Hợp đồng API và quyết định ẩn
 
 Ứng dụng `deploy/hf_space/app.py` cài package `safeview_ml` từ cùng source snapshot
-đã train. Pipeline serialized sở hữu preprocessing; Space không chép lại hàm
-chuẩn hóa. Artifact nằm ở `artifacts/RUN_ID/<family>/`, gồm `pipeline.joblib`,
-`decision_policy.json`, `metadata.json`. Loader kiểm tra SHA-256 trước khi đọc
-joblib và đối chiếu revision/policy. Chỉ tải artifact từ nguồn tin cậy: hash
-không xác thực tác giả và joblib có thể thực thi mã Python.
+đã train. Artifact sở hữu preprocessing; Space không chép lại hàm chuẩn hóa. Release BamiBERT
+ở `artifacts/RUN_ID/bamibert/`, gồm model/tokenizer Hugging Face,
+`transformer_config.json`, `decision_policy.json`, `metadata.json`. BamiBERT nhận text
+chưa tách từ; PhoBERT dùng PyVi nếu triển khai trong thí nghiệm khác. Backend baseline
+vẫn nhận `pipeline.joblib`. Loader kiểm tra SHA-256 của mọi file inference và đối
+chiếu revision/policy trước khi load. Chỉ dùng nguồn tin cậy; hash không xác thực tác
+giả, và joblib baseline có thể thực thi mã Python. Space dùng CPU, không yêu cầu GPU
+chỉ để load Transformer; độ trễ phải đo thực tế.
 
 Luồng giữ tương thích với `src/provider/fetch-util.ts` hiện tại:
 
@@ -57,26 +64,30 @@ revision, label mapping và giới hạn độ dài.
 
 Input phải là string không rỗng và dài tối đa 20.000 ký tự Python. Input sai, model
 không sẵn sàng, timeout hoặc SSE error là lỗi; không tạo một dự đoán CLEAN. Gradio
-dùng queue tối đa 64 và hai tác vụ inference đồng thời. Không log raw text trong
+dùng queue tối đa 64, mặc định một tác vụ inference đồng thời để hạn chế tải CPU;
+`SAFEVIEW_CONCURRENCY` chỉ tăng sau khi đo hiệu năng. Không log raw text trong
 mã ứng dụng. Cần xem lại retention/access log của nơi host trước khi triển khai.
 
 ## Chuẩn bị và publish đúng artifact
 
-Sau khi EDA, training, chọn model/ngưỡng và final test hoàn thành, chạy trong đúng
+Sau khi EDA, training, khóa BamiBERT/ngưỡng và final test hoàn thành, chạy trong đúng
 môi trường Python đã train:
 
 ```sh
 python scripts/publish_hf.py \
-  --release-dir artifacts/RUN_ID/FAMILY \
+  --release-dir artifacts/RUN_ID/bamibert \
   --evaluation-dir results/final/RUN_ID \
-  --output-dir artifacts/hf-bundle-RUN_ID
+  --output-dir deploy/bundles/RUN_ID
 ```
 
-RUN_ID và FAMILY trong lệnh là tham số cần thay bằng kết quả thật. Lệnh mặc định
+RUN_ID trong lệnh phải thay bằng run thật; family triển khai mặc định là `bamibert`. Lệnh mặc định
 chỉ tạo bundle local để review. Script từ chối dữ liệu synthetic/không rõ nguồn,
 test chưa hoàn tất, hash/revision khác kết quả test, source snapshot hoặc phiên
 bản runtime đã đổi. Bundle chứa wheel đúng source, dependencies pin phiên bản,
-model card, aggregate test metrics và Space app. Không chứa raw dataset hoặc
+model/tokenizer, model card, aggregate test metrics và Space app. Bundle CPU dùng
+Torch CPU cùng release, không chép bộ CUDA của Colab sang Space. Phiên bản Gradio
+được pin tương thích với Transformers và huggingface-hub; không tự nâng riêng một
+package khi resume/đóng gói. Không chứa raw dataset hoặc
 dự đoán từng mẫu.
 
 Để upload, chạy với output directory mới và thêm `--publish --model-repo OWNER/MODEL
@@ -90,13 +101,17 @@ Nếu model private, Space cần secret `HF_TOKEN` có quyền **read** model, �
 hình trên server. Token đăng nhập ở máy local không tự trở thành secret của Space.
 Extension không thể gọi trực tiếp private Space mà không có cơ chế xác thực;
 không nhúng token vào bundle extension. Demo public chỉ tiến hành sau khi rõ quyền,
-hoặc dùng backend giữ secret cho endpoint private. Xác minh quyền tạo Space,
-compute/cost và sleep trên tài khoản dự định dùng.
+hoặc dùng backend giữ secret cho endpoint private. Xác minh quyền tạo Space, compute/cost và sleep trên tài khoản dự định dùng. Theo
+[tài liệu Spaces](https://huggingface.co/docs/hub/spaces-overview) và
+[bảng giá](https://huggingface.co/pricing), tạo Gradio/Docker Space thông thường hiện
+yêu cầu gói trả phí; PRO 9 USD/tháng, CPU Basic 2 vCPU/16 GB RAM không tính tiền
+phần cứng theo giờ. [ZeroGPU](https://huggingface.co/docs/hub/spaces-zerogpu) miễn phí
+có điều kiện/quota/hàng đợi, không phải bảo đảm phục vụ extension liên tục.
 
 Chạy local với artifact thật:
 
 ```sh
-SAFEVIEW_RELEASE_DIR=artifacts/RUN_ID/FAMILY python deploy/hf_space/app.py
+SAFEVIEW_RELEASE_DIR=artifacts/RUN_ID/bamibert python deploy/hf_space/app.py
 ```
 
 Tải từ Hub yêu cầu `SAFEVIEW_MODEL_REPO` và `SAFEVIEW_MODEL_REVISION` là full commit
@@ -114,12 +129,28 @@ git apply --check ../cs114-ml-project/docs/safeview-cs114-demo.patch
 git apply ../cs114-ml-project/docs/safeview-cs114-demo.patch
 ```
 
-Điền `src/settings/cs114-demo.ts` bằng cấu hình thật từ bundle:
+Sau khi Space đã deploy và kiểm tra API, tạo file cấu hình từ bundle đã xác minh:
+
+```sh
+python scripts/export_extension_config.py \
+  --bundle-dir deploy/bundles/RUN_ID \
+  --space-url https://OWNER-SPACE.hf.space \
+  --model-repo OWNER/MODEL \
+  --output deploy/bundles/RUN_ID/cs114-demo.ts
+```
+
+Lệnh này không truy cập mạng, không gửi token và không sửa repo SafeView. Thay URL và
+repo bằng giá trị thật; chép file đã review vào `src/settings/cs114-demo.ts` của nhánh
+demo sau khi áp dụng patch. Script từ chối ghi đè file đầu ra. Các trường lấy từ
+artifact hoặc cấu hình người dùng:
 
 - `spaceUrl`: HTTPS origin thực tế của Space, không có `/gradio_api` phía sau.
 - `modelUrl`, `modelName`: link model card và tên thuật toán thực sự được chọn.
 - `modelRevision`, `policyVersion`, `threshold`: lấy nguyên từ `decision_policy.json`.
-- `forceVietnamese`: true cho demo bình luận Việt, kể cả không dấu; false để giữ
+- `timeoutMs`: mặc định 60.000 ms, có thể đặt bằng `--timeout-ms`; đo cold/warm để
+  điều chỉnh. Hết thời hạn là lỗi, không gán nhãn CLEAN.
+- `forceVietnamese`: true cho demo bình luận Việt, kể cả không dấu; dùng
+  `--automatic-routing` để đặt false và giữ
   routing theo heuristic. True sẽ đưa cả input tiếng Anh vào model Việt, nên
   chỉ dùng cho tập demo tiếng Việt có chủ đích.
 
@@ -166,8 +197,8 @@ script vẫn lưu báo cáo rồi trả exit code 1.
 
 Chỉ cập nhật tài liệu là “đã tích hợp” sau khi có Space URL, model Hub SHA, Space
 commit, SafeView integration commit, policy version, test contract thực tế và
-bảng đo end-to-end. Không suy ra mô hình mới hơn PhoBERT chỉ từ bảng so sánh ba
-thuật toán truyền thống.
+bảng đo end-to-end. Bảng nghiên cứu có SVM/LR/PhoBERT/BamiBERT; kết luận chất lượng phải dựa
+trên thực nghiệm thật, không dựa tuổi model hoặc mục tiêu triển khai.
 
 Nguồn kỹ thuật: [Gradio event API](https://gradio.app/guides/querying-gradio-apps-with-curl),
 [Hub upload](https://huggingface.co/docs/huggingface_hub/guides/upload),

@@ -1,77 +1,134 @@
 {
-  "updated_at": "2026-09-20T16:53:08.036386+00:00",
-  "status": "software_verified_real_experiment_pending",
+  "updated_at": "2026-09-22T15:52:41.439422+00:00",
+  "status": "software_verified_user_run_real_experiment_pending",
   "python": "3.13.3",
   "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
-  "python_tests": {
-    "passed": 99,
-    "failed": 0,
-    "warnings": 2,
-    "command": "python -m pytest -q",
-    "note": "Final complete suite; two upstream deprecation warnings."
+  "runtime_versions": {
+    "torch": "2.14.0",
+    "transformers": "4.57.6",
+    "accelerate": "1.15.0",
+    "pyvi": "0.1.1",
+    "huggingface-hub": "0.36.2",
+    "gradio": "6.9.0",
+    "scikit-learn": "1.9.1"
   },
-  "three_model_smoke": {
+  "python_tests": {
+    "passed": 147,
+    "failed": 0,
+    "skipped": 0,
+    "warnings": 7,
+    "command": "HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 .venv/bin/python -m pytest -q --disable-warnings",
+    "note": "Complete current suite; includes mocked GitHub archive loading, tiny offline Transformer training/resume/serving, release integrity, notebook guards and report content. No real pretrained weights or corpus."
+  },
+  "dependency_check": {
+    "status": "passed",
+    "command": ".venv/bin/python -m pip check"
+  },
+  "offline_transformer": {
     "status": "passed",
     "synthetic": true,
-    "splits": {
-      "train": 72,
-      "validation": 36,
-      "test": 36
-    },
-    "models": [
-      "svm",
-      "logistic_regression",
-      "complement_nb"
-    ],
     "verified": [
-      "aggregate EDA",
-      "staged search",
-      "training-only SVM calibration",
-      "validation threshold",
-      "artifact serialization",
-      "frozen final test",
-      "prediction API"
+      "tiny randomly initialized RoBERTa",
+      "fine-tuning orchestration",
+      "checkpoint and completed-trial resume guards",
+      "artifact round trip",
+      "model/tokenizer integrity",
+      "canonical probability output",
+      "CPU Space dependency export"
     ],
+    "real_phobert_or_bamibert_weights_loaded": false,
     "quality_claim": null
   },
   "notebook": {
     "file": "notebooks/cs114_safeview.ipynb",
-    "executed_code_cells": 9,
-    "error_outputs": 0,
-    "mode": "saved-results / incomplete ViHSD"
-  },
-  "local_http_api": {
-    "status": "passed",
-    "first_and_warm_calls": 6,
-    "failed_calls": 0,
-    "protocol": "POST event submission + GET named SSE",
-    "synthetic_model": true,
-    "server_closed_after_check": true,
-    "not_a_hugging_face_latency_measurement": true
+    "stored_executed": false,
+    "code_cells": 9,
+    "validation": "nbformat, generated cell parity, Python syntax and sequential read-only cell execution passed",
+    "network_training_evaluation_calls_in_read_only_mode": 0,
+    "full_jupyter_kernel_execution": "not_verified_local_socket_restricted",
+    "actual_colab_execution": "not_run"
   },
   "wheel": {
     "status": "built",
-    "command": "python -m build --wheel --no-isolation",
-    "serving_linux_pinned_dependency_count": 63
+    "command": ".venv/bin/python -m build --wheel --no-isolation"
   },
   "safeview_patch": {
     "base_commit": "7e09b01569365c6d173616fb22cc5612b269f441",
+    "apply_check": "passed",
     "type_check": "passed",
-    "selected_tests_passed": 63,
-    "new_tests": 8,
     "executed_in": "isolated temporary copy of tracked files",
-    "sibling_repository_modified": false
+    "sibling_repository_modified": false,
+    "live_model_api_and_browser_e2e": "not_run"
   },
   "real_vihsd_download": {
-    "status": "blocked_missing_train_split_and_hf_authentication",
+    "status": "not_run_user_will_execute_github_loader",
+    "default_source": "https://github.com/sonlam1102/vihsd/blob/main/data/vihsd.zip",
+    "default_storage": "memory",
+    "disk_cache": "explicitly_opt_in",
     "substitute_dataset_used": false
   },
   "real_vihsd_metrics_available": false,
   "published_hugging_face_model": false,
   "published_hugging_face_space": false,
+  "word_and_slide_artifacts": "existing_baseline_drafts_not_regenerated; generator updated and content tests passed",
   "limitations": [
-    "Synthetic class markers only verify software and do not measure Vietnamese classification quality.",
-    "Real EDA, training, test, manual error analysis, publication and extension E2E are pending authorized data and deployment targets."
+    "Synthetic tests verify software behavior, not Vietnamese classification quality.",
+    "Actual Colab GPU memory, runtime and interruption recovery remain unmeasured.",
+    "Real EDA, fine-tuning, test, error analysis and publication are reserved for the user.",
+    "Live Hugging Face latency, startup behavior and extension E2E remain unverified.",
+    "The updated code is local; the configured GitHub ref must contain it before Colab setup.",
+    "Final test evaluation has no resume support; interrupted status=evaluating requires controlled recovery without deleting the test marker."
   ],
-  "local_vihsd_inventory": "data/local_inventory.json"
+  "historical_baseline_verification": {
+    "updated_at": "2026-09-20T16:53:08.036386+00:00",
+    "three_model_smoke": {
+      "status": "passed",
+      "synthetic": true,
+      "splits": {
+        "train": 72,
+        "validation": 36,
+        "test": 36
+      },
+      "models": [
+        "svm",
+        "logistic_regression",
+        "complement_nb"
+      ],
+      "verified": [
+        "aggregate EDA",
+        "staged search",
+        "training-only SVM calibration",
+        "validation threshold",
+        "artifact serialization",
+        "frozen final test",
+        "prediction API"
+      ],
+      "quality_claim": null
+    },
+    "local_http_api": {
+      "status": "passed",
+      "first_and_warm_calls": 6,
+      "failed_calls": 0,
+      "protocol": "POST event submission + GET named SSE",
+      "synthetic_model": true,
+      "server_closed_after_check": true,
+      "not_a_hugging_face_latency_measurement": true
+    },
+    "note": "Earlier three-classical-model checks; these are not current BamiBERT or PhoBERT benchmarks."
+  },
+  "user_guide": {
+    "file": "docs/train-deploy-guide.md",
+    "documentation_checked_at": "2026-09-22",
+    "sources": [
+      "Context7: /huggingface/huggingface_hub",
+      "Context7: /gradio-app/gradio",
+      "Context7: /huggingface/transformers/v4.57.3",
+      "Official Hugging Face and Google Colab documentation"
+    ],
+    "python_snippets_syntax_checked": 11,
+    "shell_snippets_syntax_checked": 2,
+    "relative_links": "valid",
+    "commands_and_paths_reviewed_against_source": true,
+    "real_training_publishing_and_extension_integration_performed": false
+  }
 }

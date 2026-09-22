@@ -21,7 +21,7 @@ import tomllib
 import zipfile
 from pathlib import Path
 
-from safeview_ml.inference import RELEASE_FILES, ReleasePredictor, file_sha256
+from safeview_ml.inference import ReleasePredictor, file_sha256, release_file_names
 
 PROJECT = Path(__file__).resolve().parents[1]
 
@@ -47,7 +47,7 @@ def verify_release(release: Path, evaluation: Path):
     if final.get("dataset_fingerprint") != metadata.get("dataset_fingerprint"):
         raise ValueError("Final evaluation dataset fingerprint differs from the release")
     hashes = metadata.get("sha256", {})
-    for name in ("pipeline.joblib", "decision_policy.json"):
+    for name in set(release_file_names(metadata)) - {"metadata.json"}:
         digest = file_sha256(release / name)
         if hashes.get(name) != digest or final.get("artifact_sha256", {}).get(name) != digest:
             raise ValueError(f"Release differs from evaluated artifact: {name}")
@@ -67,11 +67,13 @@ def verify_release(release: Path, evaluation: Path):
     return ReleasePredictor(release), final
 
 
-def pinned_dependencies():
-    """Freeze the installed dependency closure, excluding platform-only deps.
+def pinned_dependencies(extra=None):
+    """Freeze the dependency closure for the CPU Space.
 
     Evaluate markers for Linux/Python matching the Space. This refuses to invent
     a version if a Linux dependency is not installed in the build environment.
+    Transformer releases use the same PyTorch version's CPU wheel, so a Colab
+    CUDA installation does not add CUDA libraries to the CPU Space.
     """
     from packaging.markers import default_environment
     from packaging.requirements import Requirement
@@ -79,6 +81,8 @@ def pinned_dependencies():
 
     project = tomllib.loads((PROJECT / "pyproject.toml").read_text())["project"]
     requirements = project["dependencies"] + project["optional-dependencies"]["serve"]
+    if extra:
+        requirements += project["optional-dependencies"][extra]
     environment = default_environment()
     environment.update(sys_platform="linux", platform_system="Linux", extra="")
     pending = [Requirement(value) for value in requirements]
@@ -88,12 +92,18 @@ def pinned_dependencies():
         if requirement.marker and not requirement.marker.evaluate(environment):
             continue
         name = canonicalize_name(requirement.name)
+        if extra == "transformers" and (name.startswith(("nvidia-", "cuda-")) or name == "triton"):
+            continue
         if name in pinned:
             continue
         distribution = importlib.metadata.distribution(name)
-        pinned[name] = distribution.version
+        version = distribution.version
+        if extra == "transformers" and name == "torch":
+            version = version.split("+", 1)[0] + "+cpu"
+        pinned[name] = version
         pending.extend(Requirement(value) for value in distribution.requires or [])
-    return [f"{name}=={version}" for name, version in sorted(pinned.items())]
+    indexes = ["--extra-index-url https://download.pytorch.org/whl/cpu"] if extra == "transformers" else []
+    return indexes + [f"{name}=={version}" for name, version in sorted(pinned.items())]
 
 
 def bundle_file_digests(bundle: Path):
@@ -130,7 +140,7 @@ def verify_prepared_bundle(bundle: Path):
         manifest["model_revision"] == metadata.get("model_revision") == final.get("model_revision")
     ):
         raise ValueError("Prepared bundle model revisions differ")
-    for name in ("pipeline.joblib", "decision_policy.json"):
+    for name in set(release_file_names(metadata)) - {"metadata.json"}:
         digest = expected.get(f"model/{name}")
         if digest != metadata.get("sha256", {}).get(name) or digest != final.get("artifact_sha256", {}).get(name):
             raise ValueError("Prepared bundle differs from its evaluated artifact")
@@ -142,27 +152,38 @@ def prepare_bundle(release_dir: Path, evaluation_dir: Path, output_dir: Path):
     if output_dir.exists():
         raise FileExistsError(f"Refusing to overwrite bundle: {output_dir}")
     predictor, final = verify_release(release_dir, evaluation_dir)
-    dependencies = pinned_dependencies()
+    is_transformer = predictor.metadata.get("backend") == "transformers"
+    dependencies = pinned_dependencies("transformers") if is_transformer else pinned_dependencies()
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="safeview-bundle-", dir=output_dir.parent) as staging:
         stage = Path(staging)
         model, space = stage / "model", stage / "space"
         model.mkdir()
         space.mkdir()
-        for name in RELEASE_FILES:
+        for name in release_file_names(predictor.metadata):
             shutil.copy2(release_dir / name, model / name)
         (model / "evaluation").mkdir()
         for path in [evaluation_dir / "metadata.json", evaluation_dir / "comparison.csv", *sorted(evaluation_dir.glob("*/test_metrics.json"))]:
             destination = model / "evaluation" / path.relative_to(evaluation_dir)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, destination)
+        library = "transformers" if is_transformer else "sklearn"
+        base_model = predictor.metadata.get("base_model")
+        base_header = f"base_model: {base_model}\n" if base_model else ""
+        if final.get("selection_criterion") == "predeclared_deployment_family":
+            selection_text = (
+                f"Deployment family `{final['deployment_family']}` was declared before training. "
+                f"The validation Macro-F1 winner is `{final['validation_best_family']}`. "
+                "Deployment selection does not by itself establish superior accuracy. "
+            )
+        else:
+            selection_text = "The deployment model was selected using validation Macro-F1. "
         card = (
-            "---\nlanguage: vi\nlibrary_name: sklearn\ntags:\n- text-classification\n- research\n---\n\n"
+            f"---\nlanguage: vi\nlibrary_name: {library}\npipeline_tag: text-classification\n{base_header}tags:\n- text-classification\n- research\n---\n\n"
             "# SafeView CS114 research classifier\n\n"
             f"Model revision: `{predictor.model_revision}`. Policy version: `{predictor.policy_version}`.\n\n"
-            "The model was selected using validation Macro-F1. The linked evaluation "
-            "contains the test results for the frozen pipeline. This release makes no "
-            "claim of superiority over the existing PhoBERT service.\n\n"
+            f"{selection_text}The linked evaluation contains the test results for "
+            "all frozen candidates.\n\n"
             "Input is one Vietnamese comment. Labels follow ViHSD: CLEAN (0), "
             "OFFENSIVE (1), HATE (2). Three-class prediction uses argmax. The "
             "independent hiding decision uses P(OFFENSIVE)+P(HATE) >= the locked "
@@ -176,12 +197,26 @@ def prepare_bundle(release_dir: Path, evaluation_dir: Path, output_dir: Path):
             "The classifier lacks conversation context and may fail on irony, "
             "quoted abuse, dialect, teencode and domain shift. It is a research "
             "component, not an exhaustive content-safety system.\n\n"
-            "Only load trusted joblib artifacts. Install the bundled wheel and "
+            "Install the bundled wheel and "
             "requirements.txt using the Python version in metadata.json, then call "
             "`safeview_ml.inference.ReleasePredictor(release_dir)`. See "
             "[test comparison](evaluation/comparison.csv) and the per-model test "
             "metrics under evaluation/.\n"
         )
+        if is_transformer:
+            card += (
+                "\n## Transformer input and upstream terms\n\n"
+                "Use `ReleasePredictor` to reproduce the saved preprocessing and truncation. "
+                "A generic Transformers pipeline alone does not perform this release's "
+                "PhoBERT word segmentation or apply its hiding threshold. "
+                "PhoBERT uses PyVi segmentation; BamiBERT consumes raw text. "
+                "The exact settings and upstream revision are in transformer_config.json.\n\n"
+                "Upstream: [PhoBERT](https://huggingface.co/vinai/phobert-base) and "
+                "[BamiBERT](https://huggingface.co/Qualcomm-AI-Research/BamiBERT). "
+                "Retain the applicable upstream license and citation notices. BamiBERT "
+                "is released under BSD-3-Clause-Clear and Qualcomm Responsible AI terms. "
+                "Fine-tuning does not remove upstream or dataset conditions.\n"
+            )
         (model / "README.md").write_text(card, encoding="utf-8")
         wheel_dir = stage / "wheels"
         subprocess.run(
@@ -215,7 +250,7 @@ def prepare_bundle(release_dir: Path, evaluation_dir: Path, output_dir: Path):
             f"This bundle serves evaluated model `{predictor.model_revision}` with policy `{predictor.policy_version}`.",
         )
         readme = readme.replace("sdk: gradio\n", f"sdk: gradio\nsdk_version: {importlib.metadata.version('gradio')}\n")
-        readme = readme.replace('python_version: "3.13"', f'python_version: "{platform.python_version()}"')
+        readme = re.sub(r'^python_version:.*$', f'python_version: "{platform.python_version()}"', readme, flags=re.MULTILINE)
         (space / "README.md").write_text(readme, encoding="utf-8")
         write_json(stage / "bundle.json", {
             "model_revision": predictor.model_revision,
@@ -224,6 +259,8 @@ def prepare_bundle(release_dir: Path, evaluation_dir: Path, output_dir: Path):
             "wheel_sha256": file_sha256(model / wheel.name),
             "source_sha256": predictor.metadata["source_sha256"],
             "publish_status": "prepared_locally",
+            "serving_device": "cpu",
+            "pytorch_cpu_build": is_transformer,
             "files_sha256": bundle_file_digests(stage),
         })
         # Rename only after every check and copy succeeds; an incomplete bundle

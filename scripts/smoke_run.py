@@ -1,4 +1,8 @@
-"""Exercise all three models with invented class markers, never ViHSD results."""
+"""Exercise the three traditional baselines with invented class markers.
+
+Transformer software checks use tiny offline encoders in the pytest suite.
+Neither run produces ViHSD research results.
+"""
 import argparse
 import json
 from pathlib import Path

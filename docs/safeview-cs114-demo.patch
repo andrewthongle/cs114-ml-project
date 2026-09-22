@@ -154,7 +154,7 @@ new file mode 100644
 +++ b/src/provider/cs114-space.ts
 @@ -0,0 +1,55 @@
 +import { CS114_DEMO, type Cs114DemoConfig } from '../settings/cs114-demo';
-+import { HF_TIMEOUT_MS, HF_MAX_RETRIES, HF_RETRY_DELAY_MS } from '../settings/config';
++import { HF_MAX_RETRIES, HF_RETRY_DELAY_MS } from '../settings/config';
 +import { fetchWithRetry } from './fetch-util';
 +import type { ModerationResult } from './types';
 +
@@ -203,7 +203,7 @@ new file mode 100644
 +export async function moderateCs114(text: string): Promise<ModerationResult> {
 +  if (!CS114_DEMO) throw new Error('CS114 demo has no configured release');
 +  const raw = await fetchWithRetry(CS114_DEMO.spaceUrl, text, {
-+    timeoutMs: HF_TIMEOUT_MS, maxRetries: HF_MAX_RETRIES, retryDelayMs: HF_RETRY_DELAY_MS,
++    timeoutMs: CS114_DEMO.timeoutMs ?? 60000, maxRetries: HF_MAX_RETRIES, retryDelayMs: HF_RETRY_DELAY_MS,
 +    apiName: 'decision',
 +  });
 +  return normaliseCs114Response(raw, CS114_DEMO);
@@ -329,7 +329,7 @@ diff --git a/src/settings/cs114-demo.ts b/src/settings/cs114-demo.ts
 new file mode 100644
 --- /dev/null
 +++ b/src/settings/cs114-demo.ts
-@@ -0,0 +1,13 @@
+@@ -0,0 +1,14 @@
 +/** Separate research build. Generated from the evaluated release before use. */
 +export interface Cs114DemoConfig {
 +  spaceUrl: string;
@@ -339,6 +339,7 @@ new file mode 100644
 +  policyVersion: string;
 +  threshold: number;
 +  forceVietnamese: boolean;
++  timeoutMs?: number;
 +}
 +
 +// Null deliberately preserves the existing extension until a real release exists.

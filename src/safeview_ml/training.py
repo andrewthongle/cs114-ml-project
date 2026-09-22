@@ -1,9 +1,10 @@
-"""Staged validation search, immutable selection, and one final test report.
+"""Validation-only selection for traditional and Transformer classifiers.
 
-Test rows are never passed to fit, calibration, hyperparameter or threshold
-selection. Each family gets the same representation budget and six parameter
-settings by default. Calibration of the selected SVM is re-ranked on validation.
+Test rows never enter fit, calibration, checkpoint or threshold selection.
+The deployment family may be declared before training; validation ranking is
+reported separately, so an explicitly selected BamiBERT is not called a winner.
 """
+import gc
 import itertools
 import json
 import threading
@@ -24,6 +25,7 @@ from .evaluation import classification_metrics, export_evaluation, benchmark_pip
 from .models import build_pipeline, calibrate_pipeline
 from .policy import select_policy, harm_scores, apply_policy
 from .provenance import environment_metadata, read_json, sha256, utc_now, write_json
+from .transformer_model import TRANSFORMER_FAMILIES
 
 
 def _fit(estimator, texts, labels):
@@ -123,12 +125,163 @@ def _learning_curves(estimator, train, validation, fractions, seed, output_dir):
     return rows
 
 
-def train_experiment(bundle, config, project_dir=".", run_id=None, synthetic=False):
+def _load_candidate(artifact, device="cpu"):
+    from .inference import ReleasePredictor
+    return ReleasePredictor(artifact, device=device).pipeline
+
+
+def _history_export(history, directory):
+    write_json(directory / "training_history.json", history)
+    table = pd.DataFrame(history)
+    table.to_csv(directory / "training_history.csv", index=False)
+    if table.empty or "epoch" not in table:
+        return
+    import matplotlib.pyplot as plt
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    for key in ["loss", "eval_loss"]:
+        if key in table:
+            values = table.dropna(subset=[key, "epoch"])
+            axes[0].plot(values.epoch, values[key], "o-", label=key)
+    if "eval_macro_f1" in table:
+        values = table.dropna(subset=["eval_macro_f1", "epoch"])
+        axes[1].plot(values.epoch, values.eval_macro_f1, "o-", label="dev Macro-F1")
+    axes[0].set(xlabel="Epoch", ylabel="Loss")
+    axes[1].set(xlabel="Epoch", ylabel="Macro-F1", ylim=(0, 1))
+    for axis in axes:
+        if axis.lines:
+            axis.legend()
+    fig.tight_layout()
+    fig.savefig(directory / "training_history.png", dpi=150)
+    plt.close(fig)
+
+
+def _train_transformer_family(family, family_config, config, train, validation,
+                              run, artifacts, project, metadata, tuning, resume):
+    from .transformer_model import (
+        TransformerFineTuner, TransformerTextClassifier, artifact_hashes, resolve_base_revision,
+    )
+    family_checkpoints = run / "checkpoints" / family
+    family_checkpoints.mkdir(parents=True, exist_ok=True)
+    pin_path = family_checkpoints / "base_revision.json"
+    source = {"model_id": family_config["model_id"], "requested_revision": family_config.get("revision", "main")}
+    if pin_path.exists():
+        pinned = read_json(pin_path)
+        if {key: pinned[key] for key in source} != source:
+            raise ValueError("Base-model source changed while resuming")
+    else:
+        pinned = {**source, "resolved_revision": resolve_base_revision(source["model_id"], source["requested_revision"])}
+        write_json(pin_path, pinned)
+    best = None
+    guard = {"dataset_fingerprint": metadata["dataset_fingerprint"],
+             "config_sha256": sha256(run / "config.json"),
+             "source_sha256": metadata["source_sha256"], "versions": metadata["versions"]}
+    for index, params in enumerate(ParameterGrid(family_config.get("grid", {}))):
+        settings = {**config.get("transformer_defaults", {}),
+                    **family_config.get("defaults", {}), **params,
+                    "model_id": source["model_id"], "revision": pinned["resolved_revision"],
+                    "preprocessing": family_config.get("preprocessing", "pyvi" if family == "phobert" else "raw")}
+        trial_dir = family_checkpoints / f"trial-{index:03d}"
+        final_dir = trial_dir / "final"
+        result_path = trial_dir / "trial_result.json"
+        if resume and result_path.exists():
+            result = read_json(result_path)
+            if result["settings"] != settings or result["guard"] != guard:
+                raise ValueError("Completed Transformer trial config or dataset changed")
+            if artifact_hashes(final_dir) != result["sha256"]:
+                raise ValueError("Completed Transformer trial files changed")
+        else:
+            tuner = TransformerFineTuner(settings, validation.text.tolist(), validation.label.to_numpy(),
+                                         trial_dir, config.get("seed", 42), guard, resume=resume)
+            resources = _fit(tuner, train.text.tolist(), train.label.to_numpy())
+            estimator = tuner.estimator_
+            score = classification_metrics(validation.label, estimator.predict(validation.text.tolist()))["macro_f1"]
+            # Keep no inactive trial on GPU; final CPU reload gives comparable timing.
+            estimator.to("cpu").save(final_dir)
+            result = {"settings": settings, "guard": guard, "score": score,
+                      "resources": {**resources, **tuner.training_metadata_},
+                      "history": tuner.history_, "sha256": artifact_hashes(final_dir)}
+            write_json(result_path, result)
+            del estimator, tuner
+            gc.collect()
+        row = {"family": family, "stage": "transformer", "feature_kind": "pretrained_tokenizer",
+               "min_df": None, "params": json.dumps(settings, sort_keys=True),
+               "validation_macro_f1": result["score"], **result["resources"]}
+        # Retries replace a trial row instead of duplicating it.
+        tuning[:] = [old for old in tuning if not (old["family"] == family and old["params"] == row["params"])]
+        tuning.append(row)
+        pd.DataFrame(tuning).to_csv(run / "tuning_results.csv", index=False)
+        if best is None or result["score"] > best["score"]:
+            best = {**result, "final_dir": final_dir}
+    if best is None:
+        raise ValueError(f"No Transformer trials configured for {family}")
+    from .transformer_model import _dependencies
+    torch, _ = _dependencies()
+    evaluation_device = "cuda" if torch.cuda.is_available() and best["settings"].get("device", "auto") != "cpu" else "cpu"
+    estimator = TransformerTextClassifier.load(best["final_dir"], device=evaluation_device)
+    probs = canonical_probabilities(estimator, validation.text.tolist())
+    revision = f"{metadata['run_id']}-{family}"
+    policy = select_policy(validation.label.to_numpy(), probs, model_revision=revision, **config.get("policy", {}))
+    directory = run / family
+    directory.mkdir(exist_ok=True)
+    export_evaluation(validation.label.to_numpy(), probs, directory, policy=policy, prefix="validation")
+    artifact = artifacts / family
+    artifact.mkdir(exist_ok=True)
+    estimator.save(artifact)
+    write_json(artifact / "decision_policy.json", policy)
+    hashes = artifact_hashes(artifact)
+    restored = TransformerTextClassifier.load(artifact, device="cpu")
+    original_cpu = canonical_probabilities(estimator.to("cpu"), validation.text.iloc[:32].tolist())
+    np.testing.assert_allclose(canonical_probabilities(restored, validation.text.iloc[:32].tolist()),
+                               original_cpu, atol=1e-7, rtol=1e-6)
+    del restored
+    artifact_metadata = {**metadata, "status": "frozen_candidate", "model_revision": revision,
+                         "family": family, "backend": "transformers", "sha256": hashes,
+                         "params": best["settings"], "base_model": pinned["model_id"],
+                         "base_revision": pinned["resolved_revision"], "serialization_verified": True}
+    write_json(artifact / "metadata.json", artifact_metadata)
+    resources = best["resources"]
+    artifact_bytes = sum((artifact / name).stat().st_size for name in hashes)
+    write_json(directory / "resources.json", {**resources, "artifact_bytes": artifact_bytes,
+                                                "total_search_fit_seconds": sum(r["fit_seconds"] for r in tuning if r["family"] == family)})
+    estimator.to(evaluation_device)
+    write_json(directory / "train_metrics.json", classification_metrics(train.label, estimator.predict(train.text.tolist())))
+    estimator.to("cpu")
+    latency = benchmark_pipeline(estimator, validation.text.iloc[:128].tolist(),
+                                 repeats=int(config.get("transformer_benchmark_repeats", 5)), warmup=1)
+    latency.update(device="cpu", scope="warm CPU raw-text preprocessing, tokenization and Transformer inference")
+    write_json(directory / "latency.json", latency)
+    _history_export(best["history"], directory)
+    _save_predictions(validation, probs, project / "data/processed" / metadata["run_id"] / family / "validation" / "predictions.csv", policy)
+    score = classification_metrics(validation.label, probs.argmax(axis=1))["macro_f1"]
+    comparison = {"family": family, "backend": "transformers", "feature_kind": "pretrained_tokenizer", "min_df": None,
+                  "raw_validation_macro_f1": best["score"], "validation_macro_f1": score,
+                  "calibrated": False, "threshold": policy["threshold"],
+                  "fit_seconds": resources["fit_seconds"], "artifact_bytes": artifact_bytes}
+    candidate = {"family": family, "backend": "transformers", "model_revision": revision,
+                 "artifact_dir": str(artifact.relative_to(project)), "sha256": hashes,
+                 "metadata_sha256": sha256(artifact / "metadata.json"), "validation_macro_f1": score}
+    return comparison, candidate
+
+
+def _save_progress(run, comparison, candidates, tuning):
+    temp = run / "progress.tmp.json"
+    write_json(temp, {"comparison": comparison, "candidates": candidates, "tuning": tuning})
+    temp.replace(run / "progress.json")
+
+
+def train_experiment(bundle, config, project_dir=".", run_id=None, synthetic=False, resume=False):
     validate_training_data(bundle)
+    if not config.get("models"):
+        raise ValueError("Configure at least one model")
+    deployment_family = config.get("deployment_family")
+    if deployment_family is not None and deployment_family not in config["models"]:
+        raise ValueError("deployment_family must name a configured model")
     if dataset_fingerprint(bundle.splits) != bundle.manifest["fingerprint"]:
         raise ValueError("Dataset fingerprint no longer matches the loaded splits")
     synthetic = bool(synthetic or bundle.manifest.get("synthetic", False))
     project = Path(project_dir).resolve()
+    if resume and not run_id:
+        raise ValueError("resume=True requires the original run_id")
     run_id = run_id or time.strftime("%Y%m%d-%H%M%S")
     if not run_id or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in run_id):
         raise ValueError("run_id may contain only letters, digits, - and _")
@@ -139,23 +292,53 @@ def train_experiment(bundle, config, project_dir=".", run_id=None, synthetic=Fal
             raise ValueError("This dataset already has a final test evaluation. Do not tune after viewing test; use saved results.")
     run = project / "results/runs" / run_id
     artifacts = project / "artifacts" / run_id
-    if run.exists() or artifacts.exists():
+    if (run.exists() or artifacts.exists()) and not resume:
         raise FileExistsError(f"Run already exists: {run_id}; use saved results or a new run_id")
-    run.mkdir(parents=True)
-    artifacts.mkdir(parents=True)
     metadata = environment_metadata()
     metadata.update(run_id=run_id, dataset_fingerprint=fingerprint,
                     dataset_manifest=bundle.manifest, synthetic=bool(synthetic), status="training")
-    write_json(run / "config.json", config)
-    write_json(run / "metadata.json", metadata)
+    if resume:
+        if not (run / "metadata.json").exists():
+            raise FileNotFoundError(f"No saved run to resume: {run_id}")
+        previous = read_json(run / "metadata.json")
+        if read_json(run / "config.json") != config:
+            raise ValueError("Experiment config changed; cannot resume this run")
+        for key in ["dataset_fingerprint", "synthetic", "source_sha256", "versions", "python"]:
+            if previous.get(key) != metadata.get(key):
+                raise ValueError(f"Run {key} changed; cannot resume this run")
+        if (run / "selection.json").exists():
+            raise ValueError("Run is already locked; use saved selection or evaluate_locked")
+        metadata = previous
+    else:
+        run.mkdir(parents=True)
+        artifacts.mkdir(parents=True)
+        write_json(run / "config.json", config)
+        write_json(run / "metadata.json", metadata)
     train = bundle.splits["train"]
     validation = bundle.splits["validation"]
     seed = int(config.get("seed", 42))
     folds = int(config.get("calibration_folds", 3))
-    if folds < 2 or train.label.value_counts().min() < folds:
+    if "svm" in config["models"] and (folds < 2 or train.label.value_counts().min() < folds):
         raise ValueError("Each training class needs at least calibration_folds examples")
     tuning, comparison, candidates = [], [], []
+    if resume and (run / "progress.json").exists():
+        progress = read_json(run / "progress.json")
+        tuning, comparison, candidates = progress["tuning"], progress["comparison"], progress["candidates"]
+        for candidate in candidates:
+            artifact = project / candidate["artifact_dir"]
+            for name, digest in {**candidate["sha256"], "metadata.json": candidate["metadata_sha256"]}.items():
+                if sha256(artifact / name) != digest:
+                    raise ValueError("Completed candidate changed; refusing to resume")
     for family, family_config in config["models"].items():
+        if any(candidate["family"] == family for candidate in candidates):
+            continue
+        if family_config.get("backend") == "transformers" or family in TRANSFORMER_FAMILIES:
+            row, candidate = _train_transformer_family(family, family_config, config, train, validation,
+                                                        run, artifacts, project, metadata, tuning, resume)
+            comparison.append(row)
+            candidates.append(candidate)
+            _save_progress(run, comparison, candidates, tuning)
+            continue
         default = family_config["defaults"]
         best = None
         seen = set()
@@ -197,12 +380,12 @@ def train_experiment(bundle, config, project_dir=".", run_id=None, synthetic=Fal
         policy = select_policy(validation.label.to_numpy(), probs, model_revision=revision,
                                **config.get("policy", {}))
         directory = run / family
-        directory.mkdir()
+        directory.mkdir(exist_ok=True)
         metrics = export_evaluation(validation.label.to_numpy(), probs, directory, policy=policy, prefix="validation")
         # Read canonical output written by export to avoid return-schema coupling.
         metrics = read_json(directory / "validation_metrics.json")
         artifact = artifacts / family
-        artifact.mkdir()
+        artifact.mkdir(exist_ok=True)
         joblib.dump(estimator, artifact / "pipeline.joblib", compress=3)
         restored = joblib.load(artifact / "pipeline.joblib")
         restored_probs = canonical_probabilities(restored, validation.text.iloc[:32].tolist())
@@ -210,7 +393,7 @@ def train_experiment(bundle, config, project_dir=".", run_id=None, synthetic=Fal
         write_json(artifact / "decision_policy.json", policy)
         hashes = {name: sha256(artifact / name) for name in ["pipeline.joblib", "decision_policy.json"]}
         artifact_metadata = {**metadata, "status": "frozen_candidate", "model_revision": revision,
-                             "family": family, "feature_kind": best["kind"], "min_df": best["min_df"],
+                             "family": family, "backend": "sklearn", "feature_kind": best["kind"], "min_df": best["min_df"],
                              "params": best["params"], "sha256": hashes, "serialization_verified": True,
                              "feature_count_per_estimator": _feature_count(estimator)}
         write_json(artifact / "metadata.json", artifact_metadata)
@@ -221,18 +404,20 @@ def train_experiment(bundle, config, project_dir=".", run_id=None, synthetic=Fal
         _learning_curves(estimator, train, validation, config.get("learning_curve_fractions", []), seed, directory)
         _save_predictions(validation, probs, project / "data/processed" / run_id / family / "validation" / "predictions.csv", policy)
         score = classification_metrics(validation.label, probs.argmax(axis=1))["macro_f1"]
-        comparison.append({"family": family, "feature_kind": best["kind"], "min_df": best["min_df"],
+        comparison.append({"family": family, "backend": "sklearn", "feature_kind": best["kind"], "min_df": best["min_df"],
                            "raw_validation_macro_f1": raw_validation_macro_f1, "validation_macro_f1": score,
                            "calibrated": family == "svm", "threshold": policy["threshold"],
                            "fit_seconds": resources["fit_seconds"], "artifact_bytes": (artifact / "pipeline.joblib").stat().st_size})
         candidates.append({"family": family, "model_revision": revision,
                            "artifact_dir": str(artifact.relative_to(project)), "sha256": hashes,
                            "metadata_sha256": sha256(artifact / "metadata.json"), "validation_macro_f1": score})
+        _save_progress(run, comparison, candidates, tuning)
     ranked = sorted(candidates, key=lambda item: (-item["validation_macro_f1"], item["family"]))
-    selected = ranked[0]
+    selected = next((c for c in candidates if c["family"] == deployment_family), ranked[0])
     selection = {
         "schema_version": 1, "run_id": run_id, "locked_at": utc_now(), "dataset_fingerprint": fingerprint,
-        "synthetic": bool(synthetic), "selection_criterion": "validation_macro_f1_then_family_name",
+        "synthetic": bool(synthetic), "selection_criterion": "predeclared_deployment_family" if deployment_family else "validation_macro_f1_then_family_name",
+        "validation_best_family": ranked[0]["family"], "deployment_family": selected["family"],
         "selected_family": selected["family"], "model_revision": selected["model_revision"],
         "candidates": candidates, "config_sha256": sha256(run / "config.json"),
         "test_evaluated": False,
@@ -280,7 +465,10 @@ def evaluate_locked(bundle, run_dir, project_dir="."):
                       "dataset_fingerprint": selection["dataset_fingerprint"],
                       "selection_sha256": sha256(run / "selection.json"),
                       "artifact_sha256": selected["sha256"], "synthetic": selection["synthetic"],
-                      "status": "evaluating", "started_at": utc_now()}
+                      "status": "evaluating", "started_at": utc_now(),
+                      "selection_criterion": selection["selection_criterion"],
+                      "deployment_family": selection["selected_family"],
+                      "validation_best_family": selection.get("validation_best_family", selection["selected_family"])}
     # This marker closes tuning even if a later plot/export fails after test access.
     write_json(final / "metadata.json", final_metadata)
     test = bundle.splits["test"]
@@ -288,13 +476,15 @@ def evaluate_locked(bundle, run_dir, project_dir="."):
     config = read_json(run / "config.json")
     for candidate in selection["candidates"]:
         artifact = project / candidate["artifact_dir"]
-        estimator = joblib.load(artifact / "pipeline.joblib")
+        estimator = _load_candidate(artifact)
         policy = read_json(artifact / "decision_policy.json")
         probs = canonical_probabilities(estimator, test.text.tolist())
         directory = final / candidate["family"]
         export_evaluation(test.label.to_numpy(), probs, directory, policy=policy, prefix="test")
         metrics = classification_metrics(test.label, probs.argmax(axis=1))
-        rows.append({"family": candidate["family"], "selected_by_validation": candidate["family"] == selection["selected_family"],
+        rows.append({"family": candidate["family"],
+                     "selected_by_validation": candidate["family"] == selection.get("validation_best_family", selection["selected_family"]),
+                     "selected_for_deployment": candidate["family"] == selection["selected_family"],
                      "macro_f1": metrics["macro_f1"], "accuracy": metrics["accuracy"], "weighted_f1": metrics["weighted_f1"]})
         _save_predictions(test, probs, project / "data/processed" / selection["run_id"] / candidate["family"] / "test" / "predictions.csv", policy)
         rng = np.random.default_rng(config.get("seed", 42))

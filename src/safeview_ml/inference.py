@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -20,10 +21,43 @@ from .policy import LABEL_MAPPING, LABEL_NAMES, SCORE_DEFINITION, harm_scores, v
 LABELS = LABEL_NAMES
 MAX_TEXT_LENGTH = 20_000
 RELEASE_FILES = ("pipeline.joblib", "decision_policy.json", "metadata.json")
+TRANSFORMER_ASSETS = frozenset({
+    "config.json", "model.safetensors", "model.safetensors.index.json",
+    "transformer_config.json", "tokenizer.json", "tokenizer_config.json",
+    "special_tokens_map.json", "added_tokens.json", "vocab.txt", "vocab.json",
+    "merges.txt", "bpe.codes", "sentencepiece.bpe.model", "tokenizer.model",
+})
 
 
 class ReleaseError(ValueError):
     """The artifact, policy, or prediction violates the release contract."""
+
+
+def _transformer_asset(name: str) -> bool:
+    return name in TRANSFORMER_ASSETS or bool(re.fullmatch(r"model-\d{5}-of-\d{5}\.safetensors", name))
+
+
+def release_file_names(metadata: dict[str, Any]) -> tuple[str, ...]:
+    """Return a closed inventory of the files allowed to affect inference."""
+    backend = metadata.get("backend", "sklearn")
+    if backend == "sklearn":
+        return RELEASE_FILES
+    if backend != "transformers":
+        raise ReleaseError(f"Unsupported release backend: {backend}")
+    hashes = metadata.get("sha256")
+    if not isinstance(hashes, dict) or not hashes:
+        raise ReleaseError("Transformer release requires artifact sha256 values")
+    if any(not isinstance(name, str) or not (_transformer_asset(name) or name == "decision_policy.json")
+           for name in hashes):
+        raise ReleaseError("Unsupported transformer integrity entry")
+    required = {"config.json", "transformer_config.json", "tokenizer_config.json", "decision_policy.json"}
+    if not required.issubset(hashes):
+        raise ReleaseError("Transformer release is missing required hashed configuration files")
+    if "model.safetensors" not in hashes and "model.safetensors.index.json" not in hashes:
+        raise ReleaseError("Transformer release requires safetensors weights")
+    if "tokenizer.json" not in hashes and not {"vocab.txt", "bpe.codes"}.issubset(hashes):
+        raise ReleaseError("Transformer release requires tokenizer assets")
+    return (*sorted(hashes), "metadata.json")
 
 
 def _read_object(path: Path) -> dict[str, Any]:
@@ -63,25 +97,38 @@ def validate_text(text: str, max_length: int = MAX_TEXT_LENGTH) -> str:
 class ReleasePredictor:
     """Read the exact pipeline/policy pair that was selected on validation."""
 
-    def __init__(self, release_dir: str | Path, *, max_text_length: int = MAX_TEXT_LENGTH):
+    def __init__(self, release_dir: str | Path, *, max_text_length: int = MAX_TEXT_LENGTH, device: str = "cpu"):
         self.release_dir = Path(release_dir)
         if not isinstance(max_text_length, int) or isinstance(max_text_length, bool) or max_text_length < 1:
             raise ValueError("max_text_length must be a positive integer")
         self.max_text_length = max_text_length
-        for name in RELEASE_FILES:
+        self.metadata = _read_object(self.release_dir / "metadata.json")
+        self.backend = self.metadata.get("backend", "sklearn")
+        files = release_file_names(self.metadata)
+        for name in files:
             if not (self.release_dir / name).is_file():
                 raise ReleaseError(f"Missing release file: {name}")
-        self.metadata = _read_object(self.release_dir / "metadata.json")
         hashes = self.metadata.get("sha256", {})
         if not isinstance(hashes, dict):
             raise ReleaseError("metadata.sha256 must be a filename-to-digest object")
+        if set(hashes) != set(files) - {"metadata.json"}:
+            raise ReleaseError("Release sha256 must cover every inference file")
         for name, expected in hashes.items():
-            if name not in RELEASE_FILES or name == "metadata.json":
+            if name not in files or name == "metadata.json":
                 raise ReleaseError(f"Unsupported integrity entry: {name}")
             if not isinstance(expected, str) or len(expected) != 64:
                 raise ReleaseError(f"Invalid SHA-256 digest for {name}")
             if file_sha256(self.release_dir / name) != expected:
                 raise ReleaseError(f"Integrity check failed for {name}")
+        if self.backend == "transformers":
+            unexpected = {p.name for p in self.release_dir.iterdir() if _transformer_asset(p.name)} - set(hashes)
+            if unexpected:
+                raise ReleaseError(f"Unverified transformer assets: {sorted(unexpected)}")
+            if "model.safetensors.index.json" in hashes:
+                index = _read_object(self.release_dir / "model.safetensors.index.json")
+                shards = set(index.get("weight_map", {}).values())
+                if not shards or not shards.issubset(hashes) or any(not _transformer_asset(s) for s in shards):
+                    raise ReleaseError("Weight index refers to unverified shards")
 
         self.policy = _read_object(self.release_dir / "decision_policy.json")
         self.model_revision = _required_string(self.policy, "model_revision")
@@ -104,7 +151,11 @@ class ReleasePredictor:
         self.threshold = float(threshold)
 
         # All metadata and integrity checks precede deserialization.
-        self.pipeline = joblib.load(self.release_dir / "pipeline.joblib")
+        if self.backend == "transformers":
+            from .transformer_model import TransformerTextClassifier
+            self.pipeline = TransformerTextClassifier.load(self.release_dir, device=device)
+        else:
+            self.pipeline = joblib.load(self.release_dir / "pipeline.joblib")
         if not callable(getattr(self.pipeline, "predict_proba", None)):
             raise ReleaseError("Release pipeline must implement predict_proba")
         classes = list(getattr(self.pipeline, "classes_", []))

@@ -34,7 +34,8 @@ def environment_metadata():
     source = Path(__file__).parent
     project = source.parent.parent
     versions = {}
-    for name in ["safeview-ml", "scikit-learn", "numpy", "scipy", "pandas", "joblib", "matplotlib", "gradio"]:
+    for name in ["safeview-ml", "scikit-learn", "numpy", "scipy", "pandas", "joblib", "matplotlib", "gradio",
+                 "torch", "transformers", "accelerate", "tokenizers", "safetensors", "pyvi", "huggingface-hub"]:
         try:
             versions[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:

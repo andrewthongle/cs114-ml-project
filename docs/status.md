@@ -1,28 +1,32 @@
-# Tiến độ thực hiện PLAN.md
+# Tiến độ thực hiện
 
-## Đã triển khai
+Cập nhật phạm vi ngày 22/09/2026: bốn mô hình chính SVM/LR/PhoBERT/BamiBERT; BamiBERT triển khai theo yêu cầu, model đứng đầu dev báo riêng. ComplementNB nằm trong `configs/traditional.yaml` nếu cần thực nghiệm bổ sung theo rubric.
 
-- Package Python, CLI, cấu hình, môi trường/lock và provenance nguồn + phiên bản thư viện.
-- Import split chính thức, downloader HF có xác thực và SHA cố định; audit dữ liệu, EDA và 4 loại biểu đồ.
-- NFC/khoảng trắng; TF-IDF token/char/combined; SVM, LR, ComplementNB; staged search trên validation.
-- Calibration SVM có TF-IDF trong từng fold train; reliability diagnostics cho ba mô hình.
-- Metrics ba lớp và policy harmful tách biệt; threshold sweep, tie-break xác định trước.
-- Learning curves, train/validation gap, RSS, kích thước artifact, latency, bootstrap test và phiếu phân tích lỗi.
-- Khóa model/policy; kiểm tra fingerprint, hashes, serialization và ngăn tune sau khi mở test.
-- API Gradio, đóng gói release và chuẩn bị bản vá SafeView trên snapshot riêng.
-- Một notebook duy nhất; script tái tạo Word/slide phương pháp và nhập kết quả đã lưu khi có.
+## Đã chuẩn bị trong mã nguồn
 
-## Đã kiểm chứng
+- Nạp ZIP ViHSD trực tiếp từ GitHub chính thức vào RAM/cache tùy chọn; giữ split, SHA, checksum và fingerprint. Loader local và nguồn HF có xác thực vẫn hỗ trợ.
+- Luồng SVM/LR và Transformer; PhoBERT tách từ bằng PyVi, BamiBERT dùng văn bản chưa tách từ; train/dev metrics, policy và artifact thống nhất.
+- Cấu hình Colab khởi đầu, checkpoint/resume, một notebook có setup GitHub/cài dependencies và output root trên Drive; cờ tải/train/test/bundle tắt mặc định.
+- Lựa chọn triển khai BamiBERT tách khỏi `validation_best_family`, khóa finalist/policy trước test.
+- API Gradio và đóng gói artifact để người dùng tự publish; patch SafeView chờ model/Space URL thật.
 
-Chi tiết máy đọc được ở `docs/verification.json`. Dữ liệu tổng hợp chỉ dùng để kiểm tra phần mềm. Chưa có điểm số thực nghiệm ViHSD. Đã kiểm tra POST/SSE thật bằng TestClient, không suy luận rằng Space public đã hoạt động.
+Các mục trên mô tả khả năng phần mềm, không phải xác nhận đã fine-tune checkpoint thật hoặc đã deploy.
 
-## Còn cần dữ liệu hoặc thao tác thực tế
+## Kiểm chứng và giới hạn
 
-1. Xác nhận phạm vi NLP với giảng viên nếu rubric yêu cầu; thông tin thành viên/hạn nộp chưa có.
-2. Bổ sung train ViHSD và provenance/revision đồng bộ với dev/test. Đã tìm thấy dev 2.672 dòng và test 6.680 dòng ở `../safe-view/data/raw/vihsd/`; chỉ đọc thống kê, không sửa hoặc dùng làm train. Hoặc đăng nhập HF sau khi được duyệt để tải lại bộ đầy đủ cùng revision.
-3. Chạy EDA thật, đánh giá leakage, train/tune, khóa lựa chọn và test; đọc khoảng 100 lỗi.
-4. Cập nhật nhận xét Word/slide/notebook bằng kết quả thật; không nộp bản nháp phương pháp như báo cáo cuối.
-5. Chọn HF Model repo/Space, xác nhận điều kiện dữ liệu và tài khoản/chi phí, publish và đo endpoint.
-6. Áp dụng cấu hình demo vào nhánh SafeView riêng khi có model URL/revision/policy; đo routing/lexicon/E2E và ghi video.
+`docs/verification.json` ghi ngày, môi trường và phạm vi kiểm tra. Kết quả synthetic hoặc mô hình Transformer nhỏ/offline chỉ xác minh mã. Chưa có điểm ViHSD, chưa biết BamiBERT hơn/kém PhoBERT, chưa đo VRAM/độ trễ thực tế trên Colab/Hugging Face. Notebook được tái tạo chưa thực thi, không giữ output cũ gây hiểu nhầm.
 
-Không có raw ViHSD được sao chép vào repo này, mô hình nghiên cứu thật hoặc endpoint mới được tạo trong lần triển khai này. Thống kê các file cục bộ đã tìm thấy nằm ở `data/local_inventory.json`; chưa xác minh revision của chúng. Không có yêu cầu F1 tùy ý hoặc mô hình bắt buộc phải thắng.
+Không tải raw ViHSD trong lần cập nhật này. Chưa publish model/Space, chưa áp dụng patch vào repo SafeView thực và chưa thay mặc định extension. Word/slide hiện có là bản nháp phạm vi baseline cũ; cần sửa phương pháp cùng kết quả sau khi người dùng chạy thực nghiệm.
+
+## Người dùng thực hiện tiếp
+
+Lệnh và cấu hình cho từng bước nằm trong [hướng dẫn Colab → Hugging Face → SafeView](train-deploy-guide.md), được đối chiếu tài liệu hiện hành bằng Context7 và nguồn chính thức ngày 22/09/2026.
+
+1. Bảo đảm nhánh GitHub dùng trong notebook đã có mã mới; mở Colab, bật setup/GPU và đặt output root bền vững trên Drive.
+2. Tải nguồn GitHub, ghi SHA, chạy EDA và xem audit. Không còn bắt buộc bổ sung thư mục train local hay đăng nhập HF chỉ để lấy dataset GitHub.
+3. Huấn luyện/tune bốn family; resume nếu cần, khóa model/policy rồi đánh giá test. Nếu rubric đòi ba thuật toán truyền thống, giữ ComplementNB bổ sung trước khi mở test.
+4. Đọc lỗi, phân tích train–dev, chất lượng và tài nguyên; cập nhật nhận xét notebook, Word và slide bằng đúng run.
+5. Chuẩn bị bundle BamiBERT; review điều kiện dữ liệu, tài khoản/chi phí và repo đích, tự publish rồi đo endpoint.
+6. Áp dụng cấu hình demo SafeView khi có URL/revision/policy thật; kiểm tra routing/lexicon/E2E, đo latency/FPR/recall và ghi demo.
+
+Không có yêu cầu BamiBERT phải thắng hoặc mức F1 tùy ý. Nếu chất lượng/độ trễ chưa phù hợp, báo giới hạn và đánh đổi thực tế.

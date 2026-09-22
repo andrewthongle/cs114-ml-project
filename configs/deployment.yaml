@@ -1,4 +1,5 @@
-status: awaiting_real_dataset_and_evaluated_release
+status: awaiting_user_training_and_evaluated_bamibert_release
+deployment_family: bamibert
 model_repo_id: null
 model_revision: null
 space_repo_id: null
@@ -6,5 +7,5 @@ run_id: null
 policy_version: "1"
 score_definition: P(OFFENSIVE)+P(HATE)
 max_input_chars: 20000
-concurrency_limit: 2
+concurrency_limit: 1
 research_demo_only: true
