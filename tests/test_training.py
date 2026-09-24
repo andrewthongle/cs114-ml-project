@@ -51,6 +51,38 @@ def test_freeze_test_and_no_retuning(trained_run):
         train_experiment(bundle, config, project, "new-run", synthetic=True)
 
 
+def test_supplementary_protocol_hooks_keep_provenance_and_default_guard(trained_run, monkeypatch):
+    from copy import deepcopy
+    from safeview_ml.provenance import read_json
+    import safeview_ml.imbalance as study
+    bundle, config, original, project = trained_run
+    evaluate_locked(bundle, original, project)
+    supplementary = deepcopy(config)
+    supplementary["supplementary_study"] = {"study_id": "named-study", "protocol_sha256": "fixture"}
+    # A marker by itself cannot disable the normal test-exposure guard.
+    with pytest.raises(FileNotFoundError):
+        train_experiment(bundle, supplementary, project, "supplementary", synthetic=True)
+    calls = []
+    provenance = {"supplementary_study": {"study_id": "named-study", "test_previously_observed": True}}
+
+    def authorize(project_arg, run_id, config_arg, fingerprint):
+        calls.append(run_id)
+        assert config_arg == supplementary
+        assert fingerprint == bundle.manifest["fingerprint"]
+        return provenance
+
+    monkeypatch.setattr(study, "validate_supplementary_run", authorize)
+    new_run = train_experiment(bundle, supplementary, project, "supplementary", synthetic=True)
+    assert calls == ["supplementary"]
+    assert read_json(new_run / "metadata.json")["supplementary_study"] == provenance["supplementary_study"]
+    monkeypatch.setattr(study, "validate_supplementary_evaluation", authorize)
+    final = evaluate_locked(bundle, new_run, project)
+    assert calls == ["supplementary", "supplementary"]
+    assert read_json(final / "metadata.json")["supplementary_study"] == provenance["supplementary_study"]
+    with pytest.raises(ValueError, match="already has a final test"):
+        train_experiment(bundle, config, project, "ordinary-after-study", synthetic=True)
+
+
 def test_modified_pipeline_rejected_before_test(trained_run):
     bundle, _, run, project = trained_run
     pipeline = project / "artifacts/example/complement_nb/pipeline.joblib"
@@ -128,3 +160,42 @@ def test_modified_policy_or_metadata_rejected_before_test(trained_run, filename)
     with pytest.raises(ValueError, match="changed"):
         evaluate_locked(bundle, run, project)
     assert not (project / "results/final/example").exists()
+
+
+def test_keep_empty_texts_train_and_evaluate_every_row(tmp_path):
+    splits = {}
+    for split, n in [("train", 18), ("validation", 9), ("test", 9)]:
+        splits[split] = pd.DataFrame({
+            "sample_id": [f"{split}-{i}" for i in range(n)],
+            "text": ["", " \t\n"] + [f"marker{i%3} comment {i}" for i in range(2, n)],
+            "label": [i % 3 for i in range(n)],
+        })
+    fingerprint = dataset_fingerprint(splits)
+    bundle = DatasetBundle(splits, {"fingerprint": fingerprint, "source": "synthetic", "synthetic": True})
+    config = {"models": {
+        "svm": {"defaults": {"C": 1.0}, "grid": {}},
+        "logistic_regression": {"defaults": {"C": 1.0}, "grid": {}},
+        "complement_nb": {"defaults": {"alpha": 1.0}, "grid": {}},
+    }, "feature_kinds": ["combined"], "min_df": [1], "max_features": 100,
+        "calibration_folds": 3, "bootstrap_repeats": 2, "empty_text_policy": "keep"}
+    run = train_experiment(bundle, config, tmp_path, "empty-strings")
+    metadata = json.loads((run / "metadata.json").read_text())
+    assert metadata["text_validation"] == {"empty_text_policy": "keep", "empty_text_counts": {
+        "train": 2, "validation": 2, "test": 2}}
+    assert json.loads((run / "config.json").read_text())["empty_text_policy"] == "keep"
+    final = evaluate_locked(bundle, run, tmp_path)
+    for family in config["models"]:
+        artifact_metadata = json.loads((tmp_path / "artifacts/empty-strings" / family / "metadata.json").read_text())
+        assert artifact_metadata["text_validation"] == metadata["text_validation"]
+        for split, folder in [("train", run / family), ("validation", run / family), ("test", final / family)]:
+            assert json.loads((folder / f"{split}_metrics.json").read_text())["n_samples"] == len(splits[split])
+        predictions = pd.read_csv(tmp_path / "data/processed/empty-strings" / family / "test/predictions.csv")
+        assert predictions.sample_id.tolist() == splits["test"].sample_id.tolist()
+    assert bundle.splits["train"].text.iloc[:2].tolist() == ["", " \t\n"]
+    assert dataset_fingerprint(bundle.splits) == fingerprint
+
+
+def test_resume_rejects_changed_empty_text_policy(trained_run):
+    bundle, config, _, project = trained_run
+    with pytest.raises(ValueError, match="config changed"):
+        train_experiment(bundle, {**config, "empty_text_policy": "keep"}, project, "example", resume=True)

@@ -270,7 +270,7 @@ def _save_progress(run, comparison, candidates, tuning):
 
 
 def train_experiment(bundle, config, project_dir=".", run_id=None, synthetic=False, resume=False):
-    validate_training_data(bundle)
+    text_validation = validate_training_data(bundle, empty_text_policy=config.get("empty_text_policy", "error"))
     if not config.get("models"):
         raise ValueError("Configure at least one model")
     deployment_family = config.get("deployment_family")
@@ -285,10 +285,15 @@ def train_experiment(bundle, config, project_dir=".", run_id=None, synthetic=Fal
     run_id = run_id or time.strftime("%Y%m%d-%H%M%S")
     if not run_id or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in run_id):
         raise ValueError("run_id may contain only letters, digits, - and _")
-    # A completed final evaluation closes tuning for this dataset in this output root.
+    # Ordinary tuning stays closed after test access. A separately frozen,
+    # explicitly documented supplementary study can authorize only its named runs.
     fingerprint = bundle.manifest["fingerprint"]
+    supplementary = None
+    if config.get("supplementary_study"):
+        from .imbalance import validate_supplementary_run
+        supplementary = validate_supplementary_run(project, run_id, config, fingerprint)
     for prior in (project / "results/final").glob("*/metadata.json"):
-        if read_json(prior).get("dataset_fingerprint") == fingerprint:
+        if read_json(prior).get("dataset_fingerprint") == fingerprint and supplementary is None:
             raise ValueError("This dataset already has a final test evaluation. Do not tune after viewing test; use saved results.")
     run = project / "results/runs" / run_id
     artifacts = project / "artifacts" / run_id
@@ -296,7 +301,10 @@ def train_experiment(bundle, config, project_dir=".", run_id=None, synthetic=Fal
         raise FileExistsError(f"Run already exists: {run_id}; use saved results or a new run_id")
     metadata = environment_metadata()
     metadata.update(run_id=run_id, dataset_fingerprint=fingerprint,
-                    dataset_manifest=bundle.manifest, synthetic=bool(synthetic), status="training")
+                    dataset_manifest=bundle.manifest, text_validation=text_validation,
+                    synthetic=bool(synthetic), status="training")
+    if supplementary is not None:
+        metadata.update(supplementary)
     if resume:
         if not (run / "metadata.json").exists():
             raise FileNotFoundError(f"No saved run to resume: {run_id}")
@@ -443,6 +451,13 @@ def evaluate_locked(bundle, run_dir, project_dir="."):
         raise ValueError("Dataset fingerprint differs from the locked selection")
     if selection["config_sha256"] != sha256(run / "config.json"):
         raise ValueError("Experiment config changed after selection was locked")
+    config = read_json(run / "config.json")
+    supplementary = None
+    if config.get("supplementary_study"):
+        from .imbalance import validate_supplementary_evaluation
+        supplementary = validate_supplementary_evaluation(
+            project, selection["run_id"], config, bundle.manifest["fingerprint"]
+        )
     final = project / "results/final" / selection["run_id"]
     if final.exists():
         raise FileExistsError(f"Final evaluation already exists: {final}; load saved results")
@@ -469,6 +484,8 @@ def evaluate_locked(bundle, run_dir, project_dir="."):
                       "selection_criterion": selection["selection_criterion"],
                       "deployment_family": selection["selected_family"],
                       "validation_best_family": selection.get("validation_best_family", selection["selected_family"])}
+    if supplementary is not None:
+        final_metadata.update(supplementary)
     # This marker closes tuning even if a later plot/export fails after test access.
     write_json(final / "metadata.json", final_metadata)
     test = bundle.splits["test"]

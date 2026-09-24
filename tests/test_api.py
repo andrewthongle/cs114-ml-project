@@ -13,7 +13,8 @@ from fastapi.testclient import TestClient
 from safeview_ml.inference import ReleasePredictor
 from test_inference import write_release
 
-APP_PATH = Path(__file__).resolve().parents[1] / "deploy" / "hf_space" / "app.py"
+PROJECT = Path(__file__).resolve().parents[1]
+APP_PATH = PROJECT / "scripts/templates/hf_space/app.py"
 spec = importlib.util.spec_from_file_location("safeview_space_app", APP_PATH)
 space_app = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(space_app)
@@ -83,7 +84,7 @@ def test_remote_configuration_requires_immutable_revision(monkeypatch):
 
 
 def load_benchmark():
-    spec = importlib.util.spec_from_file_location("benchmark_api", APP_PATH.parents[2] / "scripts/benchmark_api.py")
+    spec = importlib.util.spec_from_file_location("benchmark_api", PROJECT / "scripts/benchmark_api.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

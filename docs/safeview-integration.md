@@ -21,7 +21,7 @@ lên revision SafeView khác, cần kiểm tra lại TypeScript, provider, routi
 
 ## Hợp đồng API và quyết định ẩn
 
-Ứng dụng `deploy/hf_space/app.py` cài package `safeview_ml` từ cùng source snapshot
+Ứng dụng `scripts/templates/hf_space/app.py` cài package `safeview_ml` từ cùng source snapshot
 đã train. Artifact sở hữu preprocessing; Space không chép lại hàm chuẩn hóa. Release BamiBERT
 ở `artifacts/RUN_ID/bamibert/`, gồm model/tokenizer Hugging Face,
 `transformer_config.json`, `decision_policy.json`, `metadata.json`. BamiBERT nhận text
@@ -111,7 +111,7 @@ có điều kiện/quota/hàng đợi, không phải bảo đảm phục vụ ex
 Chạy local với artifact thật:
 
 ```sh
-SAFEVIEW_RELEASE_DIR=artifacts/RUN_ID/bamibert python deploy/hf_space/app.py
+SAFEVIEW_RELEASE_DIR=artifacts/RUN_ID/bamibert python scripts/templates/hf_space/app.py
 ```
 
 Tải từ Hub yêu cầu `SAFEVIEW_MODEL_REPO` và `SAFEVIEW_MODEL_REVISION` là full commit

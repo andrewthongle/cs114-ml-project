@@ -1,8 +1,24 @@
 # Hướng dẫn chạy Colab → Hugging Face → SafeView
 
+**Đợt bổ sung 24/09/2026:** dùng [hướng dẫn thực nghiệm trọng số lớp](imbalance-study.md).
+Đặt `RUN_ID="vihsd-003"` ở cell 1 cho đợt mới; cell bổ sung giữ
+`REFERENCE_RUN_ID="vihsd-002"` và `IMBALANCE_STUDY=True`. Dùng lại các cờ
+`RUN_TRAINING`, `RESUME_TRAINING`, `RUN_FINAL_TEST`, `RUN_PREPARE_BUNDLE` ở cell 1.
+Giữ `RUN_TRAINING=True`, `RUN_FINAL_TEST=True`, `RUN_PREPARE_BUNDLE=True` và
+`RESUME_TRAINING=False`, rồi chọn **Run All**: tự chuẩn bị kế hoạch → train đủ sáu
+cấu hình → khóa lựa chọn validation → đánh giá test → chuẩn bị bundle cục bộ.
+Không cần đổi cờ hoặc chạy một lượt riêng cho test; notebook không upload/publish.
+Khi chạy lại, notebook xác minh rồi dùng lại artifact, báo cáo test và bundle hoàn
+tất. Chỉ bật resume khi training thật sự bị ngắt; study đã khóa đánh giá không được
+train thêm. Nếu chọn BamiBERT lịch sử, dùng lại bundle lịch sử đã xác minh thay vì
+đóng gói lại bằng source mới. Không xóa/đổi tên run để vượt guard test.
+Phần dưới mô tả workflow gốc (`IMBALANCE_STUDY=False`) và triển khai từng release.
+Các đường dẫn dùng một `RUN_ID` đơn bên dưới không thay thế đường dẫn từng cấu hình
+`vihsd-003-<family>-<variant>` của đợt bổ sung.
+
 Cập nhật và đối chiếu tài liệu ngày **22/09/2026**, có dùng Context7 cho Transformers, Hugging Face Hub và Gradio. Hướng dẫn này dùng đúng script của repository; các đoạn Python ghi “Colab” chạy trong notebook, các đoạn shell ghi “máy local” chạy trong Terminal.
 
-Kết quả cần tạo: bảng so sánh **SVM, Logistic Regression, PhoBERT, BamiBERT** trên ViHSD; BamiBERT đã đánh giá được đưa lên Model Hub và Gradio Space; extension dùng đúng URL, model revision và threshold. Chưa có kết quả huấn luyện thật trong repository.
+Kết quả cần tạo: bảng so sánh **SVM, Logistic Regression, PhoBERT, BamiBERT** trên ViHSD; BamiBERT đã đánh giá được đưa lên Model Hub và Gradio Space; extension dùng đúng URL, model revision và threshold. Run `vihsd-002` đã có kết quả thật; đợt bổ sung trọng số lớp chưa chạy.
 
 ## 1. Chuẩn bị mã và tài khoản
 
@@ -18,9 +34,50 @@ git rev-parse HEAD
 
 Lệnh push là bước **bạn thực hiện** để Colab tải được mã đã commit. Ghi lại SHA đầy đủ từ lệnh cuối, dùng làm `REPO_REF` trong notebook. Nếu làm việc trên nhánh khác, push nhánh đó và vẫn pin SHA tương ứng.
 
+Nếu checkout `/content/cs114-ml-project` đã tồn tại, cell setup **không tự fetch/pull**;
+`REPO_REF="main"` có thể vẫn trỏ vào nhánh cũ trong runtime. Notebook mới có cell
+**Đồng bộ source/config** ngay sau cell cấu hình, mang theo source/config và checksum.
+Với `RUN_SETUP=True`, cell kiểm tra mọi file trước khi cập nhật phiên bản cũ đã biết,
+rồi bỏ cache `safeview_ml` để cell import nạp lại. Bản sửa Python/config này không
+cần push hay restart kernel. Chỉ mở file notebook mà chưa chạy cell đồng bộ chưa
+cập nhật source mà kernel đang dùng.
+
+Cell giữ nguyên cell cấu hình, dữ liệu và checkpoint; từ chối ghi đè source/config
+có chỉnh sửa riêng. Nếu dependencies khác (`pyproject.toml` khác checksum), cần
+cập nhật checkout/cài thư viện đúng phiên bản; thay đổi package có thể cần restart.
+Với run đã bắt đầu, giữ đúng source/config đã lưu để resume. Bản sửa không bỏ qua
+guard về source/config/runtime của run cũ.
+
 Mở [notebook trên Colab](https://colab.research.google.com/github/andrewthongle/cs114-ml-project/blob/main/notebooks/cs114_safeview.ipynb), chọn **Save a copy in Drive** để giữ cờ cấu hình và ghi chú của bạn. Đổi runtime sang GPU, ưu tiên T4 nếu được cấp. Colab Free không bảo đảm loại GPU, thời gian phiên hay quota; xem [Colab FAQ](https://research.google.com/colaboratory/faq.html).
 
 Chuẩn bị dung lượng Drive cho checkpoint của cả hai Transformer và các bundle. Không chỉ giữ file notebook: model, optimizer và kết quả nằm trong `RUN_ROOT` ở Drive.
+
+### Colab extension trong VS Code và repository private
+
+Chọn kernel **Colab** trong VS Code nghĩa là code chạy trên máy chủ Colab, dù file
+`.ipynb` nằm trên máy bạn. Thư mục repo và phiên đăng nhập GitHub trên máy local không
+tự chuyển sang kernel. Xem [hướng dẫn extension của Google](https://github.com/googlecolab/colab-vscode/wiki/User-Guide).
+
+Repo `andrewthongle/cs114-ml-project` hiện private (kiểm tra ngày 23/09/2026).
+Cell đầu dùng `REPO_PRIVATE=True` để nhập token khi clone lần đầu:
+
+1. Tạo [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new)
+   cho owner `andrewthongle`, chọn **Only select repositories → cs114-ml-project**,
+   cấp **Repository permissions → Contents → Read-only**, đặt ngày hết hạn.
+2. Lưu/mở lại notebook đã sửa, giữ `RUN_SETUP=True`, `REPO_PRIVATE=True` rồi chạy
+   riêng cell đầu. Dán token vào **ô nhập ẩn** khi được hỏi, không dán vào source hay URL.
+3. Token được truyền qua môi trường riêng của tiến trình Git, không ghi vào remote,
+   notebook hoặc môi trường kernel. Khi đã có checkout đúng ref, cell không hỏi lại token.
+
+[Tài liệu GitHub về token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
+hướng dẫn chọn repo và quyền tối thiểu. Nếu repo chuyển public, đặt `REPO_PRIVATE=False`.
+Cell mới hiển thị stderr Git trong lỗi: `Repository not found`/`Authentication failed`
+cần kiểm tra URL, repo được cấp quyền và hạn token; lỗi DNS/kết nối cần kiểm tra mạng runtime.
+Mã 128 riêng lẻ chưa phân biệt được các nguyên nhân này.
+
+Giữ `MOUNT_DRIVE=True` nếu cần lưu checkpoint trên Drive; extension đã hỗ trợ
+`drive.mount()` từ v0.2.1 ([trạng thái hỗ trợ](https://github.com/googlecolab/colab-vscode/wiki/Known-Issues-and-Workarounds)).
+Chạy setup riêng trước; chỉ bật train/test ở giai đoạn tương ứng bên dưới.
 
 Hugging Face cần hai repository khác nhau:
 
@@ -56,6 +113,14 @@ RUN_PREPARE_BUNDLE = False
 Chạy notebook từ đầu. Setup clone đúng commit, cài `.[dev,hub,serve,transformers]`, mount Drive; loader lấy ZIP từ [GitHub chính thức ViHSD](https://github.com/sonlam1102/vihsd/blob/main/data/vihsd.zip). Không cần chuẩn bị folder dataset hoặc HF token cho nguồn GitHub này. ZIP được đọc vào RAM, không giải nén thành `data/raw`.
 
 Xem số mẫu, phân bố nhãn, độ dài và audit trùng/rỗng. Split chính thức được giữ nguyên; `dev` được gọi là `validation`. Ghi lại SHA dataset được in ra và thay giá trị `DATA_REVISION` trong cell đầu bằng SHA đó. Cache ZIP trên Drive chỉ là tùy chọn khi bạn muốn tránh tải lại.
+
+`experiments.yaml` và `traditional.yaml` khai báo `empty_text_policy: keep` để giữ
+chuỗi rỗng/khoảng trắng trong benchmark. Raw text, dòng, ID, nhãn, split và fingerprint
+được giữ nguyên; không chèn placeholder hoặc bỏ dòng. Sau chuẩn hóa, các chuỗi này
+thành `""`: TF-IDF nhận vector toàn 0, Transformer nhận special tokens của tokenizer.
+Null và giá trị không phải chuỗi vẫn là lỗi. Cấu hình không có khóa này dùng policy
+`error`. Notebook hiển thị policy/số chuỗi rỗng từng split trước train; run lưu chúng
+trong `metadata.json → text_validation` để đưa vào báo cáo. Xem [quy tắc dữ liệu](data.md).
 
 Thêm một cell sau phần import/EDA để kiểm tra GPU và lưu thông tin phiên **trước train**:
 
@@ -335,6 +400,9 @@ Sau khi kiểm tra, commit patch và file config trong **repo SafeView** riêng.
 | Triệu chứng | Kiểm tra/xử lý |
 |---|---|
 | Colab báo không tìm thấy `pyproject.toml` | Kernel mới cần setup để vào checkout; xác nhận `ROOT` và commit |
+| `train: 2 null/empty texts` | Chạy cell Đồng bộ source/config rồi cell import để `CONFIG` có `empty_text_policy: keep`. Policy giữ chuỗi rỗng/khoảng trắng; null/non-string vẫn bị từ chối. Không bỏ hai dòng hoặc chèn placeholder. |
+| `unexpected keyword argument 'empty_text_policy'` | Notebook mới nhưng module Python/config trong Colab còn cũ. Khi setup đã thành công, chạy từ cell Đồng bộ source/config xuống; cell sẽ cập nhật file và bỏ module đã cache, không cần chạy lại cell 1. |
+| Đã sửa notebook nhưng vẫn chạy code cũ | Mở lại file từ đĩa nếu VS Code đang giữ bản cũ; chạy cell Đồng bộ source/config trước import/train. Cell in các file đã cập nhật và dừng nếu runtime có chỉnh sửa riêng. |
 | CPU chạy nhưng GPU không hoạt động | SVM/LR và final test dùng CPU; fine-tune cần `torch.cuda.is_available()` |
 | CUDA OOM | Giảm batch/eval batch trong cấu hình run mới trước test; giữ nguồn và lý do thay đổi |
 | Resume báo khác config/source/runtime | Khôi phục đúng snapshot, không sửa/xóa metadata để bỏ guard |

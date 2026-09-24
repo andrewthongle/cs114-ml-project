@@ -18,6 +18,11 @@ data/processed/**
 artifacts/**
 !artifacts/.gitkeep
 results/smoke/**
+# Local experiment outputs/checkpoints live on the user's disk or Drive.
+results/runs/
+results/final/
+results/eda/
+results/studies/
 results/**/predictions*.csv
 results/**/error_review*.csv
 reports/rendered/

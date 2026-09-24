@@ -1,6 +1,8 @@
 # Optional three-traditional-model comparison if course requirements need it.
 # This has no Transformer dependency and selects the best dev Macro-F1 family.
 seed: 42
+# Same blank-text policy as the four-family experiment; no official rows dropped.
+empty_text_policy: keep
 calibration_folds: 3
 calibration_ensemble: false
 feature_kinds: [word, char, combined]

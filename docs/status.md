@@ -1,32 +1,49 @@
 # Tiến độ thực hiện
 
-Cập nhật phạm vi ngày 22/09/2026: bốn mô hình chính SVM/LR/PhoBERT/BamiBERT; BamiBERT triển khai theo yêu cầu, model đứng đầu dev báo riêng. ComplementNB nằm trong `configs/traditional.yaml` nếu cần thực nghiệm bổ sung theo rubric.
+Cập nhật 24/09/2026. Bốn mô hình chính: SVM, Logistic Regression, PhoBERT và BamiBERT.
+BamiBERT là mục tiêu triển khai; mô hình đứng đầu validation được báo riêng.
 
-## Đã chuẩn bị trong mã nguồn
+## Kết quả lịch sử đã có
 
-- Nạp ZIP ViHSD trực tiếp từ GitHub chính thức vào RAM/cache tùy chọn; giữ split, SHA, checksum và fingerprint. Loader local và nguồn HF có xác thực vẫn hỗ trợ.
-- Luồng SVM/LR và Transformer; PhoBERT tách từ bằng PyVi, BamiBERT dùng văn bản chưa tách từ; train/dev metrics, policy và artifact thống nhất.
-- Cấu hình Colab khởi đầu, checkpoint/resume, một notebook có setup GitHub/cài dependencies và output root trên Drive; cờ tải/train/test/bundle tắt mặc định.
-- Lựa chọn triển khai BamiBERT tách khỏi `validation_best_family`, khóa finalist/policy trước test.
-- API Gradio và đóng gói artifact để người dùng tự publish; patch SafeView chờ model/Space URL thật.
+Run `vihsd-002` có cấu hình, metadata, artifact, metrics train/validation và final test.
+PhoBERT đứng đầu validation (Macro-F1 0,675702); BamiBERT cao nhất test trong lần chạy
+này (Macro-F1 0,662046). Cả SVM và LR finalist đã dùng class weight balanced; Transformer
+lịch sử dùng loss thường. Không coi baseline cũ là đối chứng chưa xử lý mất cân bằng.
 
-Các mục trên mô tả khả năng phần mềm, không phải xác nhận đã fine-tune checkpoint thật hoặc đã deploy.
+## Đợt bổ sung đã chuẩn bị, chờ người dùng train
 
-## Kiểm chứng và giới hạn
+- Cặp SVM/LR null/balanced, cố định C và TF-IDF theo finalist lịch sử: bốn cấu hình mới.
+- PhoBERT/BamiBERT chỉ fine-tune thêm weighted cross-entropy: hai cấu hình mới; đọc
+  kết quả loss thường cũ để đối chiếu, không train/test lại chúng.
+- Trọng số chỉ tính từ train, lưu cùng checkpoint/artifact; chọn checkpoint và ngưỡng
+  trên validation. Protocol bổ sung ghi rõ test đã xem và giới hạn một seed/runtime.
+- Giữ nguyên cell cấu hình đầu notebook, với `RUN_ID="vihsd-003"` người dùng đã đặt.
+  Cell bổ sung dùng `REFERENCE_RUN_ID="vihsd-002"`; các cờ train/resume/test/bundle
+  vẫn ở cell đầu. Với train/test/bundle cùng bật, một lần Run All tự chuẩn bị kế
+  hoạch, train sáu cấu hình, khóa lựa chọn validation, đánh giá test rồi tạo bundle
+  cục bộ; không cần đổi cờ giữa các bước, không upload/publish.
+- Bảng đợt mới ở `results/studies/vihsd-003`; kết quả/artifact từng cấu hình mang
+  tiền tố `vihsd-003-<family>-<variant>`. Bảng lịch sử vẫn đọc `vihsd-002`.
+- Toàn bộ sáu cấu hình mới phải khóa trước test. Kết quả cũ và marker được giữ nguyên;
+  guard thông thường vẫn chặn train sau test nếu không thuộc protocol bổ sung.
+- Chạy lại kiểm tra và dùng lại artifact/test/bundle đã hoàn tất. Resume dành cho
+  training bị gián đoạn; không mở lại training sau khi study đã khóa đánh giá.
+  BamiBERT lịch sử được chọn thì dùng lại bundle cũ đã xác minh, không đóng gói lại
+  bằng source mới.
 
-`docs/verification.json` ghi ngày, môi trường và phạm vi kiểm tra. Kết quả synthetic hoặc mô hình Transformer nhỏ/offline chỉ xác minh mã. Chưa có điểm ViHSD, chưa biết BamiBERT hơn/kém PhoBERT, chưa đo VRAM/độ trễ thực tế trên Colab/Hugging Face. Notebook được tái tạo chưa thực thi, không giữ output cũ gây hiểu nhầm.
+Hướng dẫn: [Thực nghiệm trọng số lớp](imbalance-study.md). Kế hoạch đầy đủ: [PLAN](../PLAN.md).
+Lần cập nhật này không chạy train ViHSD, không mở test mới và không publish.
 
-Không tải raw ViHSD trong lần cập nhật này. Chưa publish model/Space, chưa áp dụng patch vào repo SafeView thực và chưa thay mặc định extension. Word/slide hiện có là bản nháp phạm vi baseline cũ; cần sửa phương pháp cùng kết quả sau khi người dùng chạy thực nghiệm.
+## Còn cần hoàn thành
 
-## Người dùng thực hiện tiếp
+1. Người dùng Run All đợt bổ sung để train, khóa lựa chọn validation, đánh giá test
+   và chuẩn bị bundle cục bộ trong cùng luồng.
+2. Đọc train–dev gap, curves và 50–100 lỗi validation; phân tích thay đổi per-class,
+   confusion matrix và đánh đổi tỷ lệ ẩn nhầm CLEAN/recall harmful từ kết quả đã lưu.
+3. Cập nhật Word/slide từ kết quả thật cùng run/protocol. Tài liệu trong `reports/`
+   vẫn là bản nháp cũ; chưa được xây dựng lại trong lần này.
+4. Kiểm tra artifact BamiBERT/policy và trạng thái publish/tích hợp thực tế; benchmark
+   offline không tự chứng minh extension đang phục vụ đúng model hoặc API ổn định.
 
-Lệnh và cấu hình cho từng bước nằm trong [hướng dẫn Colab → Hugging Face → SafeView](train-deploy-guide.md), được đối chiếu tài liệu hiện hành bằng Context7 và nguồn chính thức ngày 22/09/2026.
-
-1. Bảo đảm nhánh GitHub dùng trong notebook đã có mã mới; mở Colab, bật setup/GPU và đặt output root bền vững trên Drive.
-2. Tải nguồn GitHub, ghi SHA, chạy EDA và xem audit. Không còn bắt buộc bổ sung thư mục train local hay đăng nhập HF chỉ để lấy dataset GitHub.
-3. Huấn luyện/tune bốn family; resume nếu cần, khóa model/policy rồi đánh giá test. Nếu rubric đòi ba thuật toán truyền thống, giữ ComplementNB bổ sung trước khi mở test.
-4. Đọc lỗi, phân tích train–dev, chất lượng và tài nguyên; cập nhật nhận xét notebook, Word và slide bằng đúng run.
-5. Chuẩn bị bundle BamiBERT; review điều kiện dữ liệu, tài khoản/chi phí và repo đích, tự publish rồi đo endpoint.
-6. Áp dụng cấu hình demo SafeView khi có URL/revision/policy thật; kiểm tra routing/lexicon/E2E, đo latency/FPR/recall và ghi demo.
-
-Không có yêu cầu BamiBERT phải thắng hoặc mức F1 tùy ý. Nếu chất lượng/độ trễ chưa phù hợp, báo giới hạn và đánh đổi thực tế.
+Kiểm thử synthetic/tiny Transformer xác minh cơ chế phần mềm, không thay cho kết quả
+ViHSD. Không có yêu cầu BamiBERT phải thắng hay mức F1 tự đặt.

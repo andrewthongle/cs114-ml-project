@@ -142,6 +142,53 @@ class _EncodedDataset:
                 "labels": self.labels[index]}
 
 
+def _loss_weighting(labels, strategy=None):
+    """Describe a loss using canonical counts from the fit (training) labels only."""
+    if strategy is not None and strategy != "balanced":
+        raise ValueError("Transformer class_weight must be null or 'balanced'")
+    values = np.asarray(labels)
+    if values.ndim != 1 or not len(values) or not np.isin(values, [0, 1, 2]).all():
+        raise ValueError("Transformer training labels must be a nonempty vector of 0, 1, 2")
+    counts = np.bincount(values.astype(np.int64), minlength=len(LABEL_NAMES))
+    if strategy == "balanced" and np.any(counts == 0):
+        raise ValueError("Balanced Transformer loss requires every class in the training labels")
+    weights = len(values) / (len(LABEL_NAMES) * counts) if strategy == "balanced" else None
+    return {
+        "strategy": strategy or "none", "loss": "cross_entropy",
+        "label_order": list(LABEL_NAMES), "training_class_counts": counts.tolist(),
+        "class_weights": weights.tolist() if weights is not None else None,
+        "weight_source": "train_labels" if strategy == "balanced" else None,
+        "formula": "n_train / (n_classes * class_count)" if strategy == "balanced" else None,
+        "reduction": "mean",
+    }
+
+
+def _make_trainer(torch, transformers, loss_weighting, **kwargs):
+    """Keep the stock Trainer for unweighted runs and optional imports lazy."""
+    if loss_weighting["class_weights"] is None:
+        return transformers.Trainer(**kwargs)
+
+    class WeightedCrossEntropyTrainer(transformers.Trainer):
+        def __init__(self, **trainer_kwargs):
+            super().__init__(**trainer_kwargs)
+            self.class_weights = torch.tensor(loss_weighting["class_weights"], dtype=torch.float32)
+            # Our batch mean does not consume num_items_in_batch. Trainer must
+            # therefore retain its usual gradient-accumulation normalization.
+            self.model_accepts_loss_kwargs = False
+
+        def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+            labels = inputs["labels"]
+            outputs = model(**{key: value for key, value in inputs.items() if key != "labels"})
+            logits = outputs.logits
+            loss = torch.nn.functional.cross_entropy(
+                logits.float().reshape(-1, len(LABEL_NAMES)), labels.reshape(-1),
+                weight=self.class_weights.to(logits.device), reduction="mean",
+            )
+            return (loss, outputs) if return_outputs else loss
+
+    return WeightedCrossEntropyTrainer(**kwargs)
+
+
 class TransformerFineTuner:
     """One guarded full-fine-tuning trial, compatible with training._fit."""
 
@@ -156,6 +203,7 @@ class TransformerFineTuner:
         self.resume = resume
 
     def fit(self, texts, labels):
+        loss_weighting = _loss_weighting(labels, self.settings.get("class_weight"))
         torch, transformers = _dependencies()
         from sklearn.metrics import f1_score
         from transformers.trainer_utils import get_last_checkpoint
@@ -171,10 +219,15 @@ class TransformerFineTuner:
                 raise FileExistsError("Checkpoint trial already exists; use resume=True")
             if previous["requested"] != requested:
                 raise ValueError("Checkpoint config or dataset guard changed; refusing to resume")
+            if "loss_weighting" not in previous and loss_weighting["strategy"] != "none":
+                raise ValueError("Checkpoint has no loss-weighting metadata; start a new weighted trial")
+            if previous.get("loss_weighting", loss_weighting) != loss_weighting:
+                raise ValueError("Checkpoint training-label weights changed; refusing to resume")
             revision = previous["base_revision"]
         else:
             revision = resolve_base_revision(model_id, settings.get("revision", "main"))
-            write_json(manifest_path, {"requested": requested, "base_revision": revision})
+            write_json(manifest_path, {"requested": requested, "base_revision": revision,
+                                       "loss_weighting": loss_weighting})
 
         transformers.set_seed(self.seed)
         preprocessing = settings["preprocessing"]
@@ -233,7 +286,7 @@ class TransformerFineTuner:
         latest = get_last_checkpoint(str(self.output_dir)) if self.resume else None
         if latest and (Path(latest) / "scaler.pt").exists() and not use_fp16:
             raise ValueError("This checkpoint uses CUDA FP16; restore a GPU runtime to resume training")
-        trainer = transformers.Trainer(
+        trainer = _make_trainer(torch, transformers, loss_weighting,
             model=model, args=arguments, train_dataset=train, eval_dataset=validation,
             processing_class=tokenizer,
             data_collator=transformers.DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8 if use_fp16 else None),
@@ -248,6 +301,7 @@ class TransformerFineTuner:
             "best_validation_macro_f1": trainer.state.best_metric,
             "resumed_from_checkpoint": latest,
             "peak_cuda_allocated_mb": torch.cuda.max_memory_allocated() / 2**20 if use_cuda else None,
+            "loss_weighting": loss_weighting,
         }
         frozen = {
             "schema_version": 1, "base_model": model_id, "base_revision": revision,
@@ -255,6 +309,7 @@ class TransformerFineTuner:
             "unicode_normalization": "NFC", "whitespace_normalization": "collapse", "use_fast": use_fast,
             "inference_batch_size": int(settings.get("eval_batch_size", 16)),
             "label_mapping": {str(index): name for index, name in ID2LABEL.items()},
+            "loss_weighting": loss_weighting,
         }
         self.estimator_ = TransformerTextClassifier(trainer.model, tokenizer, frozen,
                                                    device="cuda" if use_cuda else "cpu")

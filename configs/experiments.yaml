@@ -1,6 +1,8 @@
 # Four primary families. Validation ranks all four; BamiBERT is the declared
 # deployment target even if another family wins. Test never changes selection.
 seed: 42
+# Retain blank strings and their labels in every official split; nulls still fail.
+empty_text_policy: keep
 deployment_family: bamibert
 calibration_folds: 3
 calibration_ensemble: false
