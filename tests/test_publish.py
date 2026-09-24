@@ -194,3 +194,78 @@ def test_failed_preparation_leaves_no_publishable_partial_bundle(package_fixture
     assert not list(fixture.output.parent.glob("safeview-bundle-*"))
     with pytest.raises(ValueError, match="Prepare a verified local bundle"):
         publisher.publish_bundle(fixture.release, "fixture/model", "fixture/space")
+
+
+def test_missing_deploy_templates_uses_versioned_fallback(package_fixture):
+    fixture = package_fixture
+    old = publisher.PROJECT / "deploy/hf_space"
+    fallback = publisher.PROJECT / "scripts/templates/hf_space"
+    fallback.mkdir(parents=True)
+    for name in ("app.py", "README.md"):
+        (old / name).rename(fallback / name)
+    publisher.prepare_bundle(fixture.release, fixture.evaluation, fixture.output)
+    assert (fixture.output / "space/app.py").read_bytes() == (fallback / "app.py").read_bytes()
+    assert not (old / "app.py").exists()
+
+
+def test_reuses_matching_bundle_without_model_load_build_or_runtime_checks(package_fixture, monkeypatch):
+    fixture = package_fixture
+    publisher.prepare_bundle(fixture.release, fixture.evaluation, fixture.output)
+    before = (fixture.output / "bundle.json").read_bytes()
+    fixture.calls.clear()
+
+    def reject_rebuild(*args, **kwargs):
+        pytest.fail("A historical bundle must not be rebuilt or deserialized")
+
+    monkeypatch.setattr(publisher, "verify_release", reject_rebuild)
+    monkeypatch.setattr(publisher.subprocess, "run", reject_rebuild)
+    (publisher.PROJECT / "src/safeview_ml/__init__.py").write_text("# New source snapshot\n")
+    monkeypatch.setattr(publisher.platform, "python_version", lambda: "0.0.0")
+    output = publisher.prepare_bundle(fixture.release, fixture.evaluation, fixture.output, reuse_existing=True)
+    assert output == fixture.output
+    assert publisher.verify_existing_bundle_for_release(fixture.release, fixture.evaluation, output)["model_revision"] == "invented-revision"
+    assert (output / "bundle.json").read_bytes() == before
+    assert fixture.calls == []
+
+
+@pytest.mark.parametrize("target", ["metadata", "artifact", "evaluation_metadata", "evaluation_metrics", "evaluation_comparison"])
+def test_reuse_rejects_different_requested_release_or_evaluation(package_fixture, target):
+    fixture = package_fixture
+    publisher.prepare_bundle(fixture.release, fixture.evaluation, fixture.output)
+    if target == "metadata":
+        publisher.write_json(fixture.release / "metadata.json", {**fixture.metadata, "model_revision": "another-run"})
+    elif target == "artifact":
+        (fixture.release / "pipeline.joblib").write_bytes(b"Different invented artifact")
+    elif target == "evaluation_metadata":
+        publisher.write_json(fixture.evaluation / "metadata.json", {**fixture.final, "model_revision": "another-run"})
+    elif target == "evaluation_metrics":
+        publisher.write_json(fixture.evaluation / "fixture_family/test_metrics.json", {"changed": True})
+    else:
+        (fixture.evaluation / "comparison.csv").write_text("changed,data\n")
+    with pytest.raises(ValueError, match="does not match the requested"):
+        publisher.prepare_bundle(fixture.release, fixture.evaluation, fixture.output, reuse_existing=True)
+
+
+def test_reuse_rejects_modified_existing_bundle(package_fixture):
+    fixture = package_fixture
+    publisher.prepare_bundle(fixture.release, fixture.evaluation, fixture.output)
+    (fixture.output / "space/app.py").write_text("# Unreviewed change\n")
+    with pytest.raises(ValueError, match="content changed"):
+        publisher.prepare_bundle(fixture.release, fixture.evaluation, fixture.output, reuse_existing=True)
+
+
+def test_reuse_existing_prepares_when_missing_but_reuse_only_does_not(package_fixture, monkeypatch):
+    fixture = package_fixture
+    arguments = ["publish_hf.py", "--release-dir", str(fixture.release),
+                 "--evaluation-dir", str(fixture.evaluation), "--output-dir", str(fixture.output)]
+    monkeypatch.setattr(publisher.sys, "argv", [*arguments, "--reuse-only"])
+    with pytest.raises(FileNotFoundError, match="restore its original bundle"):
+        publisher.main()
+    assert fixture.calls == []
+    assert not fixture.output.exists()
+    monkeypatch.setattr(publisher.sys, "argv", [*arguments, "--reuse-existing"])
+    publisher.main()
+    assert fixture.calls == [fixture.release]
+    monkeypatch.setattr(publisher.sys, "argv", [*arguments, "--reuse-only"])
+    publisher.main()
+    assert fixture.calls == [fixture.release]

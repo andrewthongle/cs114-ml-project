@@ -191,17 +191,32 @@ def load_local_dataset(data_dir: str | Path, source: str | None = None, revision
     )
 
 
-def validate_training_data(bundle: DatasetBundle) -> None:
-    """Fail explicitly on unusable text; never silently remove official rows."""
+def validate_training_data(bundle: DatasetBundle, *, empty_text_policy: str = "error") -> dict:
+    """Validate without changing rows; optionally retain zero-content strings.
+
+    ``keep`` lets the existing model preprocessing normalize blank strings to
+    ``''``. Null/non-string values remain errors under either policy.
+    """
+    if empty_text_policy not in ("error", "keep"):
+        raise ValueError("empty_text_policy must be 'error' or 'keep'.")
+    empty_counts = {}
     for split in SPLIT_NAMES:
         if split not in bundle.splits:
             raise ValueError(f"Missing {split} split.")
         frame = bundle.splits[split]
-        invalid = frame.text.map(lambda text: not isinstance(text, str) or not normalize_text(text))
-        if invalid.any():
-            raise ValueError(f"{split}: {int(invalid.sum())} null/empty texts. Review the audit and document a policy before training; no rows were dropped.")
+        non_string = frame.text.map(lambda text: not isinstance(text, str))
+        if non_string.any():
+            raise ValueError(f"{split}: {int(non_string.sum())} null/non-string texts. Review the source data; no rows were dropped.")
+        empty_counts[split] = int(frame.text.map(lambda text: not normalize_text(text)).sum())
+        if empty_counts[split] and empty_text_policy == "error":
+            raise ValueError(
+                f"{split}: {empty_counts[split]} empty texts. Review the audit and set "
+                "empty_text_policy='keep' to retain blank strings with their original labels; "
+                "no rows were dropped."
+            )
     if set(bundle.splits["train"].label) != set(LABEL_NAMES):
         raise ValueError("Training split must contain all three labels CLEAN/OFFENSIVE/HATE.")
+    return {"empty_text_policy": empty_text_policy, "empty_text_counts": empty_counts}
 
 
 def save_manifest(bundle: DatasetBundle, path: str | Path) -> Path:

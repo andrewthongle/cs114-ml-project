@@ -2,7 +2,16 @@
 
 So sánh **TF-IDF + SVM**, **TF-IDF + Logistic Regression**, **PhoBERT** và **BamiBERT** trên ViHSD. BamiBERT được chỉ định triển khai lên Hugging Face cho extension; mô hình đứng đầu validation được ghi riêng. ComplementNB còn trong cấu hình thí nghiệm phụ.
 
-**Trạng thái:** đã chuẩn bị mã, notebook, API và luồng đóng gói. Người dùng tự chạy thực nghiệm; chưa có kết quả ViHSD thật hoặc Space mới. Báo cáo Word/slide cũ chưa phản ánh đầy đủ phạm vi bốn mô hình. Xem [plan](PLAN.md) và [tiến độ](docs/status.md).
+**Trạng thái:** đã có kết quả ViHSD của `vihsd-002`; PhoBERT đứng đầu validation, BamiBERT cao nhất Macro-F1 test trong lần chạy đó. SVM/LR lịch sử đã dùng class weight balanced. Đợt bổ sung tạo cặp baseline null/balanced và chỉ train thêm Transformer weighted loss, giữ nguyên run cũ và cell cấu hình đầu notebook. Người dùng tự kích hoạt train; xem [hướng dẫn mất cân bằng](docs/imbalance-study.md) và [plan](PLAN.md). Word/slide còn cần cập nhật; benchmark không xác nhận trạng thái deploy.
+
+Đợt mới dùng `RUN_ID="vihsd-003"`, cell bổ sung giữ `REFERENCE_RUN_ID="vihsd-002"`
+và `IMBALANCE_STUDY=True`. Giữ `RUN_TRAINING=True`, `RUN_FINAL_TEST=True`,
+`RUN_PREPARE_BUNDLE=True`, `RESUME_TRAINING=False` ở cell đầu rồi **Run All**.
+Notebook tự chuẩn bị kế hoạch, train đủ sáu cấu hình, khóa lựa chọn từ validation,
+đánh giá test rồi chuẩn bị bundle cục bộ; không cần đổi cờ giữa các bước và không
+tự publish. Khi chạy lại, kết quả/bundle đã hoàn tất được kiểm tra và dùng lại.
+Bảng tổng hợp nằm ở
+`results/studies/vihsd-003`; các run/artifact mới mang tiền tố `vihsd-003-<family>-<variant>`.
 
 **Bắt đầu tại [hướng dẫn Colab → Hugging Face → SafeView](docs/train-deploy-guide.md):** cấu hình từng giai đoạn, khôi phục training, publish, kiểm tra API và build extension. Có lệnh để thực hiện và cách xử lý lỗi thường gặp; đã đối chiếu tài liệu qua Context7 ngày 22/09/2026.
 
@@ -10,14 +19,17 @@ So sánh **TF-IDF + SVM**, **TF-IDF + Logistic Regression**, **PhoBERT** và **B
 
 Mở [notebooks/cs114_safeview.ipynb](notebooks/cs114_safeview.ipynb) bằng Colab, chọn runtime GPU và cấu hình theo các cell hướng dẫn:
 
-1. Bật `RUN_SETUP` để clone GitHub URL/ref được cấu hình và cài `.[dev,hub,serve,transformers]`. Source đã cập nhật cần có trên nhánh GitHub mà bạn chọn; notebook không tự push mã từ máy này.
+1. Bật `RUN_SETUP` để clone GitHub URL/ref được cấu hình và cài `.[dev,hub,serve,transformers]`. Repo private dùng `REPO_PRIVATE=True`, nhập GitHub token quyền đọc repo ở ô ẩn khi clone. Colab extension trong VS Code cũng chạy trên máy chủ Colab, không tự dùng đăng nhập GitHub local. Chạy tiếp cell **Đồng bộ source/config**: notebook mang theo source/config đã kiểm tra để cập nhật checkout cũ đã biết và nạp lại module, không cần push GitHub cho bản sửa Python/config này. Cell dừng nếu runtime có chỉnh sửa riêng hoặc dependencies khác.
 2. Đặt `RUN_ROOT` trên Drive, bật `MOUNT_DRIVE` nếu cần, chọn `RUN_ID` mới. Nếu để dưới `/content`, kết quả/checkpoint có thể mất khi runtime kết thúc.
 3. Bật `RUN_LOAD_DATA` và `RUN_EDA`. Loader lấy ZIP chính thức từ GitHub vào RAM; cache là tùy chọn, không cần tạo `data/raw`.
-4. Đọc EDA, rồi bật `RUN_TRAINING`. Khi phiên gián đoạn, giữ cùng output root/run/config/dataset SHA và bật `RESUME_TRAINING`.
-5. Sau khi khóa lựa chọn, tắt `RUN_TRAINING`/`RESUME_TRAINING`, rồi bật `RUN_FINAL_TEST`. Nạp lại báo cáo đã lưu cho những lần sau; không tiếp tục tune sau test.
-6. Chuẩn bị bundle BamiBERT đã đánh giá, rồi tự publish theo hướng dẫn deployment.
+4. Với đợt bổ sung, dùng các cờ Run All ở trên để chạy liền train → khóa validation → test → bundle. Không tiếp tục tune sau test. Khi training bị gián đoạn, giữ cùng output root/run/config/dataset SHA và bật `RESUME_TRAINING` để tiếp tục phần chưa hoàn thành.
+5. Đọc EDA, bảng kết quả và phân tích lỗi sau khi chạy; artifact, báo cáo test và bundle đã hoàn tất được xác minh rồi dùng lại ở những lần sau.
+6. Bundle chỉ được chuẩn bị cục bộ; tự publish theo hướng dẫn deployment khi cần.
 
-Notebook được lưu chưa thực thi; mặc định tất cả cờ hành động đều tắt. Chế độ xem kết quả cục bộ không gọi mạng, không train hoặc publish. Colab Free không bảo đảm GPU hay thời lượng; cấu hình 3 epoch/128 token/batch 8 là điểm khởi đầu cần bạn đo thực tế.
+Notebook giữ các giá trị cờ người dùng đã chỉnh ở cell đầu. Chế độ xem kết quả cục bộ
+qua `SAFEVIEW_NOTEBOOK_READ_ONLY=1` ép tắt các cờ hành động, không gọi mạng, train
+hoặc publish. Colab Free không bảo đảm GPU hay thời lượng; cấu hình 3 epoch/128
+token/batch 8 là điểm khởi đầu cần bạn đo thực tế.
 
 ## Cài môi trường cục bộ
 
@@ -58,25 +70,27 @@ Checkpoint và artifact nằm dưới output root. CLI train hỗ trợ `--resum
 
 ## Notebook và bài nộp
 
-Mặc định notebook chỉ đọc run đã lưu; chọn `RUN_ID` hoặc biến `SAFEVIEW_RUN_ID`, `SAFEVIEW_OUTPUT_ROOT`. Script sau thực thi chế độ đọc an toàn, giữ ghi chú nhưng ép tắt các cờ thao tác:
+Chọn `RUN_ID` hoặc biến `SAFEVIEW_RUN_ID`, `SAFEVIEW_OUTPUT_ROOT`; trong chế độ study,
+bảng lịch sử đọc `REFERENCE_RUN_ID`. Script sau thực thi chế độ đọc an toàn, giữ ghi
+chú nhưng ép tắt các cờ thao tác:
 
 ```sh
 SAFEVIEW_RUN_ID=vihsd-001 python scripts/execute_notebook.py
 ```
 
-`scripts/build_notebook.py` tái tạo notebook và xóa output cũ; không chạy khi cần giữ nhận xét đã sửa thủ công. Chỉ số và kết luận Word/slide phải lấy từ đúng run/final report, không sao chép số minh họa hoặc kết luận cũ.
+`scripts/build_notebook.py` giữ nguyên toàn bộ cell cấu hình của bạn và output của các cell không đổi; chỉ xóa output khi source của cell do script tạo thay đổi. Các cell/nhận xét thêm thủ công ngoài mẫu vẫn cần sao lưu trước khi rebuild. Payload đồng bộ chỉ chứa Python/config được liệt kê trong `scripts/notebook_runtime.py`, không chứa dữ liệu, token hay giá trị cell cấu hình. Chỉ số và kết luận Word/slide phải lấy từ đúng run/final report, không sao chép số minh họa hoặc kết luận cũ.
 
 Phiếu đọc khoảng 100 lỗi nằm tại `data/processed/<run>/<family>/<split>/error_review.csv` dưới output root; tra text theo `sample_id` trong bundle rồi ghi nhóm lỗi/nhận xét cục bộ. Không commit raw text hoặc dữ liệu từng mẫu. Test dùng để báo cáo, không chọn preprocessing/model/ngưỡng.
 
 ## API, Hugging Face và SafeView
 
 ```sh
-SAFEVIEW_RELEASE_DIR=artifacts/vihsd-001/bamibert python deploy/hf_space/app.py
+SAFEVIEW_RELEASE_DIR=artifacts/vihsd-001/bamibert python scripts/templates/hf_space/app.py
 safeview-ml predict --release-dir artifacts/vihsd-001/bamibert 'Một bình luận tự viết'
 python scripts/publish_hf.py   --release-dir artifacts/vihsd-001/bamibert   --evaluation-dir results/final/vihsd-001   --output-dir deploy/bundles/vihsd-001
 ```
 
-Lệnh cuối chỉ chuẩn bị bundle local từ artifact đã test thật. Model Hub lưu checkpoint/tokenizer/policy; Gradio Space mới cung cấp API. Publish cần repo đích, tài khoản phù hợp và điều kiện dữ liệu đã làm rõ. Xem [Space](deploy/hf_space/README.md) và [tích hợp SafeView](docs/safeview-integration.md). Chưa áp dụng patch vào repo SafeView thực hoặc đổi mặc định extension.
+Lệnh cuối chỉ chuẩn bị bundle local từ artifact đã test thật. Model Hub lưu checkpoint/tokenizer/policy; Gradio Space mới cung cấp API. Publish cần repo đích, tài khoản phù hợp và điều kiện dữ liệu đã làm rõ. Xem [Space](scripts/templates/hf_space/README.md) và [tích hợp SafeView](docs/safeview-integration.md). Chưa áp dụng patch vào repo SafeView thực hoặc đổi mặc định extension.
 
 `/classify` giữ map phẳng `CLEAN/OFFENSIVE/HATE` qua POST + SSE; `/decision` trả thêm nhãn argmax, `p_harm`, quyết định ẩn và revision; `/policy` trả policy đã khóa. Ngưỡng chọn bằng validation theo binary F1, tie-break CLEAN FPR rồi threshold cao. Ẩn khi `P(OFFENSIVE)+P(HATE) >= threshold`, không thêm argmax gate. Lỗi input/inference/network không biến thành CLEAN. Không nhúng HF token vào extension.
 

@@ -1,5 +1,6 @@
 """Execute saved-result views; never turn a user's action flags into downloads/training."""
 import os
+from copy import deepcopy
 from pathlib import Path
 import sys
 
@@ -17,11 +18,14 @@ def main():
     tagged = [cell for cell in notebook.cells if "safeview-configuration" in cell.metadata.get("tags", [])]
     if len(tagged) != 1 or "SAFEVIEW_NOTEBOOK_READ_ONLY" not in tagged[0].source:
         raise ValueError("Notebook lacks read-only configuration guard; rebuild or execute it manually.")
+    configuration_index = notebook.cells.index(tagged[0])
+    configuration = deepcopy(tagged[0])
     manager = KernelManager(kernel_name="python3")
     manager.kernel_spec.argv[0] = sys.executable
     env = {**os.environ, "SAFEVIEW_NOTEBOOK_READ_ONLY": "1"}
     NotebookClient(notebook, km=manager, timeout=600,
                    resources={"metadata": {"path": str(root)}}).execute(env=env)
+    notebook.cells[configuration_index] = configuration
     nbformat.write(notebook, path)
     print(f"Executed saved-results mode and saved: {path}")
 

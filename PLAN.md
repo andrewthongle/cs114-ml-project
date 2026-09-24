@@ -1,10 +1,10 @@
 # Kế hoạch đồ án phân loại bình luận tiếng Việt cho SafeView
 
-Cập nhật ngày 22/09/2026 theo lựa chọn của người dùng: so sánh **SVM, Logistic Regression, PhoBERT và BamiBERT**; **BamiBERT là mô hình dự kiến triển khai trên Hugging Face để phục vụ extension**. ComplementNB được giữ trong cấu hình phụ, không nằm trong bảng so sánh chính. Người dùng tự chạy huấn luyện, đánh giá và publish.
+Cập nhật ngày 24/09/2026: so sánh **SVM, Logistic Regression, PhoBERT và BamiBERT**, bổ sung thực nghiệm trọng số lớp và giữ nguyên run lịch sử `vihsd-002`. **BamiBERT là mô hình dự kiến triển khai để phục vụ extension**. ComplementNB được giữ trong cấu hình phụ. Người dùng tự kích hoạt huấn luyện, đánh giá và publish.
 
 Đề tài: **So sánh các mô hình phát hiện ngôn ngữ xúc phạm và thù ghét trong bình luận tiếng Việt và ứng dụng vào SafeView**. Đầu vào là một bình luận; đầu ra là CLEAN, OFFENSIVE hoặc HATE theo ViHSD. Trọng tâm đồ án gồm EDA, phương pháp, đánh giá công bằng và phân tích lỗi; extension là phần ứng dụng.
 
-**Trạng thái:** mã nguồn, cấu hình và notebook được cập nhật cho phạm vi mới. Chưa tải ViHSD thật trong lần cập nhật này, chưa fine-tune, chưa có điểm so sánh thật, chưa publish hoặc đổi model của extension. Word/slide hiện có thuộc phạm vi cũ và phải cập nhật sau khi có thực nghiệm. [Tiến độ](docs/status.md) phân biệt phần mềm và kết quả nghiên cứu.
+**Trạng thái:** đã có kết quả train/dev/test của `vihsd-002`: PhoBERT đứng đầu dev; BamiBERT đạt Macro-F1 test cao nhất trong lần chạy này. Metadata xác nhận cả SVM và LR lịch sử đã dùng `class_weight="balanced"`; không gọi chúng là baseline chưa xử lý mất cân bằng. Hai Transformer lịch sử dùng loss thường. Phần bổ sung được chuẩn bị để người dùng chạy, chưa có số liệu mới. Giữ nguyên cell cấu hình đầu tiên của notebook, checkpoint và báo cáo cũ. Word/slide cần cập nhật sau thực nghiệm; trạng thái deploy không suy ra từ điểm benchmark.
 
 Các bước người dùng thực hiện được ghi trong [hướng dẫn train, publish và tích hợp extension](docs/train-deploy-guide.md), có cấu hình notebook, lệnh triển khai và xử lý lỗi.
 
@@ -31,7 +31,7 @@ Kiểm tra số dòng, nhãn `0=CLEAN, 1=OFFENSIVE, 2=HATE`, null/rỗng, phân 
 
 ## 3. Thực nghiệm trên Colab Free
 
-Notebook duy nhất: [cs114_safeview.ipynb](notebooks/cs114_safeview.ipynb). Cell đầu cấu hình GitHub URL/ref, cài package và extras Transformer khi người dùng bật setup. Chế độ mặc định cục bộ chỉ đọc kết quả; không tải dữ liệu, train, mở test hoặc publish. Người dùng bật các bước riêng sau khi kiểm tra.
+Notebook duy nhất: [cs114_safeview.ipynb](notebooks/cs114_safeview.ipynb). Cell đầu cấu hình GitHub URL/ref, cài package và extras Transformer khi người dùng bật setup. Chế độ xem kết quả cục bộ qua `SAFEVIEW_NOTEBOOK_READ_ONLY=1` không tải dữ liệu, train, mở test hoặc publish. Đợt bổ sung hỗ trợ Run All khi các cờ train/test/bundle cùng bật; cell cấu hình của người dùng được giữ nguyên.
 
 SVM/LR chạy CPU với tìm kiếm theo giai đoạn: cùng các nhóm TF-IDF rồi tune tham số classifier. Vectorizer chỉ fit train; calibration SVM bọc toàn pipeline trong từng fold train. Transformer bắt đầu với 3 epoch, tối đa 128 token, batch 8, gradient accumulation 2 và mixed precision khi có GPU phù hợp; chọn checkpoint bằng validation Macro-F1. Đây là cấu hình khởi đầu, chưa phải kết quả đo khả năng chạy.
 
@@ -51,6 +51,52 @@ Phân biệt hai quyết định đã chốt **trước test**:
 Chọn threshold riêng cho artifact mỗi family bằng validation: `p_harm = P(OFFENSIVE)+P(HATE)`; ẩn khi `p_harm >= threshold`. Mặc định tối đa binary F1, hòa thì ưu tiên CLEAN FPR thấp rồi threshold cao. Không thêm argmax gate, không dùng lại preset của model cũ. Confidence là độ tin cậy dự đoán, không phải mức độ độc hại. Transformer xuất softmax; đó không phải bảo đảm đã calibration.
 
 Khóa model/tokenizer/preprocessing, checksums, policy và fingerprint trước test. Test báo cáo tất cả finalist nhưng không đổi quyết định triển khai theo điểm test. Lưu bootstrap intervals khi cấu hình bật, phân tích lỗi khoảng 100 mẫu bằng phiếu cục bộ và viết nhận xét: chửi đùa, trích dẫn, phủ định, mỉa mai, teencode/không dấu, cần ngữ cảnh, ranh giới OFFENSIVE/HATE. Không dùng lỗi test để tune lại. Các quy tắc khóa trong output root không thay thế kỷ luật thực nghiệm giữa nhiều máy/thư mục.
+
+## 4A. Thực nghiệm bổ sung về mất cân bằng (24/09/2026)
+
+### Câu hỏi và phạm vi
+
+Trọng số lớp có cải thiện Macro-F1 và F1/recall OFFENSIVE, HATE không? Đánh đổi với precision và lỗi CLEAN ra sao? Không mặc định weighted loss tốt hơn. Mỗi cấu hình chạy một seed; chưa khẳng định cải thiện có ý nghĩa thống kê hay tối ưu toàn cục.
+
+| Family | Đối chứng | Cấu hình có trọng số | Ngân sách bổ sung |
+|---|---|---|---|
+| SVM | Fit mới `class_weight=null` | Fit mới `balanced` | Hai cấu hình cố định, không tìm kiếm lại C/TF-IDF |
+| Logistic Regression | Fit mới `class_weight=null` | Fit mới `balanced` | Hai cấu hình cố định, không tìm kiếm lại C/TF-IDF |
+| PhoBERT | Đọc kết quả loss thường của `vihsd-002` | Fine-tune weighted cross-entropy | Một cấu hình, tối đa số epoch cũ |
+| BamiBERT | Đọc kết quả loss thường của `vihsd-002` | Fine-tune weighted cross-entropy | Một cấu hình, tối đa số epoch cũ |
+
+Tổng cộng sáu cấu hình mới (chưa tính các fold calibration/learning curves của baseline). Baseline giữ C, max_iter, feature kind, min_df, preprocessing, seed và calibration từ finalist lịch sử; chỉ thay class weight. Chọn các tham số cố định từ vòng tìm kiếm cũ giới hạn khả năng khái quát kết luận ablation.
+
+Transformer giữ revision pretrained bất biến, tokenizer/preprocessing, learning rate, batch size, accumulation, max_length, epochs, seed và quy tắc chọn checkpoint của run cũ. Bắt đầu từ pretrained gốc, không resume optimizer/checkpoint fine-tuned cũ. Trọng số `w_c = N_train / (3 * n_c)` chỉ tính từ nhãn train theo thứ tự CLEAN/OFFENSIVE/HATE, lưu counts/weights vào metadata. Không oversample đồng thời. Các curve loss có trọng số và không trọng số khác mục tiêu nên không so sánh trực tiếp độ lớn loss giữa hai chế độ.
+
+### Khóa kế hoạch, bảo toàn run và test đã xem
+
+- `results/studies/<study_id>/protocol.json` đóng băng nguồn tham chiếu, checksum báo cáo/config, sáu cấu hình và dấu vết các lần test trước. Không ghi đè kế hoạch khi chạy lại.
+- Run mới có tên `<study_id>-<family>-<variant>` và thư mục artifact/checkpoint riêng. Không sửa/xóa/đánh giá lại `vihsd-002`; đọc metrics lịch sử đã lưu.
+- Guard mặc định vẫn chặn train sau test. Ngoại lệ có tên chỉ dành cho run thuộc protocol bổ sung, đúng fingerprint và cấu hình đã khóa; không có cờ bỏ qua kiểm tra chung.
+- Hoàn thành và khóa cả sáu cấu hình trước test mới; chốt bảng/lựa chọn validation trước khi mở test. Khi study bắt đầu đánh giá test, đóng mọi training/resume trong study.
+- Test đã được xem ở vòng đầu. Báo đây là nghiên cứu bổ sung, không gọi là holdout hoàn toàn chưa quan sát. Không dùng test để chọn trọng số, checkpoint, threshold hoặc đổi kế hoạch.
+- Môi trường/source của lần chạy mới được so với lịch sử; nếu khác, ghi rõ so sánh Transformer mang tính lịch sử, không quy toàn bộ chênh lệch cho trọng số. Cặp baseline chạy trong cùng môi trường mới là so sánh có kiểm soát tốt hơn.
+
+### Notebook và đầu ra
+
+Giữ toàn bộ cell cấu hình đầu tiên (giá trị, source, metadata, output), gồm `RUN_ID="vihsd-003"` người dùng đã đặt cho đợt mới. Cell `safeview-study-configuration` dùng `IMBALANCE_STUDY=True`, `REFERENCE_RUN_ID="vihsd-002"` và lựa chọn `IMBALANCE_FAMILIES`. Dùng lại `RUN_TRAINING`, `RESUME_TRAINING`, `RUN_FINAL_TEST`, `RUN_PREPARE_BUNDLE` ở cell đầu; không thêm bộ cờ hành động riêng. Với train/test/bundle cùng bật và `RESUME_TRAINING=False`, **một lần Run All** chạy tuần tự: chuẩn bị kế hoạch → train sáu cấu hình → tự khóa lựa chọn từ validation theo quy tắc đã định → đánh giá test → chuẩn bị bundle cục bộ. Không cần đổi cờ hoặc dừng để chọn thủ công trước test. Cả sáu cấu hình phải khóa trước test; không mở lại training sau khi study đã khóa đánh giá. Bundle dùng lựa chọn BamiBERT đã khóa bằng validation, không upload/publish. Dataset/setup/Drive vẫn theo cell đầu. Đồng bộ source/config mang code mới tới Colab và nhận diện phiên bản notebook cũ đã biết; không ghi đè thay đổi không nhận diện.
+
+Chạy lại xác minh rồi dùng lại artifact, báo cáo test và bundle đã hoàn tất. `RESUME_TRAINING=True` chỉ dành cho run training còn dang dở trong cùng source/runtime/config/dataset. Test dang dở phải được xử lý có kiểm soát, không tự chạy lại. Khi chọn BamiBERT lịch sử, dùng lại bundle lịch sử nếu xác minh được artifact/policy/báo cáo; không đóng gói lại bằng source mới. Nếu bundle lịch sử thiếu hoặc không hợp lệ, báo rõ cần khôi phục từ môi trường gốc. Run All không bảo đảm tài nguyên GPU, thời lượng hoặc mạng của runtime.
+
+Bảng lịch sử đọc `vihsd-002`; kế hoạch/bảng mới ở `results/studies/vihsd-003`. Từng cấu hình có run riêng tại `results/runs/vihsd-003-<family>-<variant>` và artifact cùng tiền tố. Không tạo một run chung `results/runs/vihsd-003` để chứa cả sáu cấu hình.
+
+Đầu ra cần đọc: bảng trước–sau train/dev/test, per-class precision/recall/F1, chênh lệch điểm phần trăm, train–dev gap, confusion matrix, weighted loss history, thời gian/tài nguyên và policy harmful. Chọn ngưỡng ẩn lại trên validation cho từng artifact mới. Điểm model ba lớp và tỷ lệ ẩn nhầm/recall harmful là hai nhóm chỉ số riêng.
+
+### Các việc để hoàn thiện bài nộp
+
+1. Người dùng Run All để train sáu cấu hình, tự khóa lựa chọn validation, đánh giá test và chuẩn bị bundle cục bộ.
+2. Đọc curve/train–dev và khoảng 50–100 lỗi validation; phân tích test đợt bổ sung, giải thích lớp được lợi/lớp bị giảm.
+3. Viết nguyên nhân có ví dụ đã kiểm tra; phân biệt giả thuyết với quan sát, bổ sung giới hạn một seed/test đã xem/runtime khác.
+4. Cập nhật Word/slide/notebook từ cùng protocol/run; dành phần trình bày chính cho so sánh và lỗi, demo khoảng hai phút.
+5. Chọn artifact BamiBERT theo validation cho ứng dụng; dùng đúng policy mới và đo API/extension trước khi kết luận đã triển khai.
+
+Hướng dẫn thao tác: [Thực nghiệm mất cân bằng](docs/imbalance-study.md).
 
 ## 5. BamiBERT trên Hugging Face và extension
 

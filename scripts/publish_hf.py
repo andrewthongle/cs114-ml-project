@@ -34,6 +34,23 @@ def write_json(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def space_template_file(name: str) -> Path:
+    """Prefer local serving overrides, with checked-in templates as fallback."""
+    if name not in {"app.py", "README.md"}:
+        raise ValueError(f"Unsupported Space template: {name}")
+    for folder in (PROJECT / "deploy/hf_space", PROJECT / "scripts/templates/hf_space"):
+        candidate = folder / name
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(f"Missing Space template {name}; restore scripts/templates/hf_space before packaging")
+
+
+def evaluation_export_files(evaluation: Path):
+    """The closed set of evaluation reports that may enter a bundle."""
+    return [evaluation / "metadata.json", evaluation / "comparison.csv",
+            *sorted(evaluation.glob("*/test_metrics.json"))]
+
+
 def verify_release(release: Path, evaluation: Path):
     """Check provenance before joblib deserialization or building a wheel."""
     metadata = read_json(release / "metadata.json")
@@ -140,6 +157,8 @@ def verify_prepared_bundle(bundle: Path):
         manifest["model_revision"] == metadata.get("model_revision") == final.get("model_revision")
     ):
         raise ValueError("Prepared bundle model revisions differ")
+    if not metadata.get("dataset_fingerprint") or final.get("dataset_fingerprint") != metadata["dataset_fingerprint"]:
+        raise ValueError("Prepared bundle evaluation dataset fingerprint differs from the release")
     for name in set(release_file_names(metadata)) - {"metadata.json"}:
         digest = expected.get(f"model/{name}")
         if digest != metadata.get("sha256", {}).get(name) or digest != final.get("artifact_sha256", {}).get(name):
@@ -147,10 +166,46 @@ def verify_prepared_bundle(bundle: Path):
     return manifest
 
 
-def prepare_bundle(release_dir: Path, evaluation_dir: Path, output_dir: Path):
+def verify_existing_bundle_for_release(release_dir: Path, evaluation_dir: Path, bundle_dir: Path):
+    """Reuse only an intact bundle of the exact requested release/evaluation.
+
+    This checks original bytes without loading the model, rebuilding its wheel,
+    or imposing today's source/runtime on a previously evaluated release.
+    """
+    release_dir, evaluation_dir, bundle_dir = map(Path, (release_dir, evaluation_dir, bundle_dir))
+    if not bundle_dir.is_dir():
+        raise FileNotFoundError(
+            f"No existing verified bundle at {bundle_dir}; restore its original bundle "
+            "to reuse a historical release without rebuilding it"
+        )
+    manifest = verify_prepared_bundle(bundle_dir)
+    metadata = read_json(release_dir / "metadata.json")
+    requested = {
+        f"model/{name}": file_sha256(release_dir / name)
+        for name in release_file_names(metadata)
+    }
+    evaluation_files = {
+        f"model/evaluation/{path.relative_to(evaluation_dir).as_posix()}": file_sha256(path)
+        for path in evaluation_export_files(evaluation_dir)
+    }
+    expected = manifest["files_sha256"]
+    bundled_evaluation = {name: digest for name, digest in expected.items()
+                          if name.startswith("model/evaluation/")}
+    if evaluation_files != bundled_evaluation:
+        raise ValueError("Existing bundle does not match the requested frozen evaluation")
+    if any(expected.get(name) != digest for name, digest in requested.items()):
+        raise ValueError("Existing bundle does not match the requested release")
+    return manifest
+
+
+def prepare_bundle(release_dir: Path, evaluation_dir: Path, output_dir: Path, *, reuse_existing=False):
     release_dir, evaluation_dir, output_dir = map(Path, (release_dir, evaluation_dir, output_dir))
     if output_dir.exists():
+        if reuse_existing:
+            verify_existing_bundle_for_release(release_dir, evaluation_dir, output_dir)
+            return output_dir
         raise FileExistsError(f"Refusing to overwrite bundle: {output_dir}")
+    app_template, readme_template = space_template_file("app.py"), space_template_file("README.md")
     predictor, final = verify_release(release_dir, evaluation_dir)
     is_transformer = predictor.metadata.get("backend") == "transformers"
     dependencies = pinned_dependencies("transformers") if is_transformer else pinned_dependencies()
@@ -163,7 +218,7 @@ def prepare_bundle(release_dir: Path, evaluation_dir: Path, output_dir: Path):
         for name in release_file_names(predictor.metadata):
             shutil.copy2(release_dir / name, model / name)
         (model / "evaluation").mkdir()
-        for path in [evaluation_dir / "metadata.json", evaluation_dir / "comparison.csv", *sorted(evaluation_dir.glob("*/test_metrics.json"))]:
+        for path in evaluation_export_files(evaluation_dir):
             destination = model / "evaluation" / path.relative_to(evaluation_dir)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, destination)
@@ -243,8 +298,8 @@ def prepare_bundle(release_dir: Path, evaluation_dir: Path, output_dir: Path):
                 "\n".join([f"./{wheel.name}", *dependencies]) + "\n", encoding="utf-8"
             )
         shutil.rmtree(wheel_dir)
-        shutil.copy2(PROJECT / "deploy/hf_space/app.py", space / "app.py")
-        readme = (PROJECT / "deploy/hf_space/README.md").read_text(encoding="utf-8")
+        shutil.copy2(app_template, space / "app.py")
+        readme = readme_template.read_text(encoding="utf-8")
         readme = readme.replace(
             "This directory is a source template, **not a published or evaluated model**.",
             f"This bundle serves evaluated model `{predictor.model_revision}` with policy `{predictor.policy_version}`.",
@@ -308,6 +363,11 @@ def main():
     parser.add_argument("--release-dir", type=Path, required=True)
     parser.add_argument("--evaluation-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    reuse = parser.add_mutually_exclusive_group()
+    reuse.add_argument("--reuse-existing", action="store_true",
+                       help="Verify and reuse an existing matching bundle; otherwise prepare a new bundle")
+    reuse.add_argument("--reuse-only", action="store_true",
+                       help="Require an existing matching bundle without rebuilding a historical release")
     parser.add_argument("--publish", action="store_true", help="Upload the freshly prepared bundle")
     parser.add_argument("--model-repo")
     parser.add_argument("--space-repo")
@@ -316,8 +376,13 @@ def main():
     args = parser.parse_args()
     if args.publish and not (args.model_repo and args.space_repo and args.acknowledge_data_rights):
         parser.error("--publish requires explicit --model-repo, --space-repo and --acknowledge-data-rights")
-    bundle = prepare_bundle(args.release_dir, args.evaluation_dir, args.output_dir)
-    print(f"Prepared local bundle: {bundle}")
+    if args.reuse_only:
+        verify_existing_bundle_for_release(args.release_dir, args.evaluation_dir, args.output_dir)
+        bundle = args.output_dir
+    else:
+        bundle = prepare_bundle(args.release_dir, args.evaluation_dir, args.output_dir,
+                                reuse_existing=args.reuse_existing)
+    print(f"Verified local bundle: {bundle}")
     if args.publish:
         publication = publish_bundle(bundle, args.model_repo, args.space_repo, public=args.public)
         print(json.dumps(publication, ensure_ascii=False, indent=2))

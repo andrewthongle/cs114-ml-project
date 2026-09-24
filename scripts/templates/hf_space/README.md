@@ -23,7 +23,7 @@ For local testing, install the project and its serving dependencies, then run
 from the project root:
 
 ```sh
-SAFEVIEW_RELEASE_DIR=artifacts/RUN_ID/FAMILY python deploy/hf_space/app.py
+SAFEVIEW_RELEASE_DIR=artifacts/RUN_ID/FAMILY python scripts/templates/hf_space/app.py
 ```
 
 Set `SAFEVIEW_RELEASE_DIR` to a trusted release directory with `metadata.json`

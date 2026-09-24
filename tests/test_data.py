@@ -9,7 +9,7 @@ import unicodedata
 import pandas as pd
 import pytest
 
-from safeview_ml.data import audit_dataset, export_eda, load_local_dataset, validate_training_data
+from safeview_ml.data import audit_dataset, dataset_fingerprint, export_eda, load_local_dataset, validate_training_data
 
 
 def _write_synthetic_splits(root):
@@ -70,6 +70,38 @@ def test_null_and_empty_texts_are_audited_and_block_training(tmp_path):
     assert audit["splits"]["train"]["empty_texts"] == 1
     with pytest.raises(ValueError, match="no rows were dropped"):
         validate_training_data(bundle)
+
+
+def test_keep_empty_strings_preserves_official_rows_and_fingerprint(tmp_path):
+    for split in ["train", "dev", "test"]:
+        pd.DataFrame({"text": ["", " \t\n", "bình thường"], "label": [0, 1, 2]}).to_json(
+            tmp_path / f"{split}.jsonl", orient="records", lines=True)
+    bundle = load_local_dataset(tmp_path)
+    original = {split: frame.copy(deep=True) for split, frame in bundle.splits.items()}
+    with pytest.raises(ValueError, match="empty_text_policy='keep'"):
+        validate_training_data(bundle)
+    summary = validate_training_data(bundle, empty_text_policy="keep")
+    assert summary == {"empty_text_policy": "keep", "empty_text_counts": {
+        "train": 2, "validation": 2, "test": 2}}
+    for split, frame in bundle.splits.items():
+        pd.testing.assert_frame_equal(frame, original[split])
+    assert dataset_fingerprint(bundle.splits) == bundle.manifest["fingerprint"]
+
+
+@pytest.mark.parametrize("value", [None, float("nan"), 123])
+@pytest.mark.parametrize("policy", ["error", "keep"])
+def test_empty_policy_still_rejects_null_or_non_string_text(tmp_path, value, policy):
+    _write_synthetic_splits(tmp_path)
+    bundle = load_local_dataset(tmp_path)
+    bundle.splits["validation"].loc[0, "text"] = value
+    with pytest.raises(ValueError, match="validation: 1 null/non-string"):
+        validate_training_data(bundle, empty_text_policy=policy)
+
+
+def test_unknown_empty_policy_is_rejected(tmp_path):
+    _write_synthetic_splits(tmp_path)
+    with pytest.raises(ValueError, match="empty_text_policy must be"):
+        validate_training_data(load_local_dataset(tmp_path), empty_text_policy="drop")
 
 
 @pytest.mark.parametrize("change,match", [("label", "Invalid label"), ("id", "duplicate sample IDs")])

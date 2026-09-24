@@ -39,7 +39,12 @@ Không có provenance thì ghi nguồn chưa xác minh, không suy đoán revisi
 
 ## Audit, preprocessing và EDA
 
-Loader giữ raw text, null/rỗng để đếm đủ mẫu; nhãn sai, ID rỗng hoặc trùng trong cùng split là lỗi. Nếu không có ID, sinh ID từ split và vị trí. Huấn luyện từ chối text null/rỗng; xem audit và ghi quyết định xử lý thay vì âm thầm bỏ dòng.
+Loader giữ raw text, null/rỗng để đếm đủ mẫu; nhãn sai, ID rỗng hoặc trùng trong cùng split là lỗi. Nếu không có ID, sinh ID từ split và vị trí. Huấn luyện luôn từ chối null và giá trị không phải chuỗi. Với chuỗi rỗng hoặc chỉ có khoảng trắng, `empty_text_policy` trong cấu hình quyết định cách kiểm tra:
+
+- `error` (mặc định khi không khai báo): dừng để xem audit và ghi rõ quyết định trước khi train.
+- `keep` (được khai báo trong `configs/experiments.yaml` và `configs/traditional.yaml`): giữ nguyên toàn bộ raw text, dòng, ID, nhãn và split chính thức; fingerprint không đổi. Không chèn placeholder hoặc loại mẫu.
+
+Với `keep`, chuỗi rỗng/khoảng trắng chuẩn hóa thành `""`: TF-IDF nhận vector toàn 0 và Transformer nhận special tokens của tokenizer. Mọi mô hình vẫn dùng cùng mẫu benchmark. `metadata.json` của run ghi `text_validation.empty_text_policy` và `text_validation.empty_text_counts` theo từng split (`train`, `validation`, `test`); notebook cũng hiển thị các số này trước train. Báo cáo phải nêu policy và số mẫu rỗng, không coi chúng là bình luận đã khôi phục nội dung.
 
 NFC/khoảng trắng được dùng trong pipeline. Giữ dấu, emoji, phủ định và chữ hoa theo mặc định. TF-IDF token là tách khoảng trắng (thường là âm tiết); PhoBERT dùng PyVi để tách từ, BamiBERT nhận văn bản chưa tách từ. PyVi gọn cho Colab nhưng khác VnCoreNLP của bước pretrain PhoBERT; báo rõ lựa chọn này. Preprocessing phải đi cùng artifact khi deploy. Chỉ fit vectorizer/statistics học được trên train.
 
